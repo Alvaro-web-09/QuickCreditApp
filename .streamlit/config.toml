@@ -1,0 +1,11 @@
+[theme]
+primaryColor = "#4CAF50"           # Verde CreceMás
+backgroundColor = "#F7F3E9"        # Crema Fondo
+secondaryBackgroundColor = "#E6F4EA" # Verde Suave (Tarjetas)
+textColor = "#0F3D3E"              # Azul Petróleo (Texto)
+font = "sans serif"
+base = "light"
+
+[server]
+headless = true
+port = 8501
