@@ -308,8 +308,8 @@ def archivar_notificacion(solicitud_id):
     supabase = get_db_client()
     try:
         supabase.table("solicitudes").update({
-            "estado": "rechazada", 
-            "motivo_rechazo": "PAGO_REVISADO_ADMIN"
+            "estado": "archivada", # ✅ SOLUCIÓN: Cambiamos "rechazada" por "archivada"
+            "motivo_rechazo": "VISTO_POR_ADMIN" # Ajustamos el texto para que tenga más sentido
         }).eq("id", solicitud_id).execute()
         
         st.toast("Notificación archivada.")

@@ -25,7 +25,7 @@ def cargar_historial_unificado(usuario_id):
             lista_maestra.append({
                 "fecha_raw": m['fecha'], 
                 "tipo": "ADMIN",
-                "titulo": "Fondeo Recibido" if es_ingreso else "Cierre/Retiro",
+                "titulo": "Fondos Recibido" if es_ingreso else "Cierre/Retiro",
                 "subtitulo": m.get('descripcion', 'Admin'),
                 "monto": m['monto'],
                 "icono": "🏦",

@@ -5,6 +5,7 @@ from db_connection import get_db_client
 import io
 import os
 import time
+from zoneinfo import ZoneInfo
 
 # --- LIBRERÍAS PARA PDF (REPORTLAB) ---
 from reportlab.lib import colors
@@ -64,7 +65,7 @@ def generar_voucher_pdf(datos):
         ["Beneficiario:", datos.get('chofer', 'N/A')],
         ["Periodo:", f"{datos.get('desde', '-')} al {datos.get('hasta', '-')}"],
         ["Concepto:", datos.get('semana_txt', 'N/A')],
-        ["Fecha Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")],
+        ["Fecha Emisión:", datetime.now(ZoneInfo("America/Managua")).strftime("%d/%m/%Y %H:%M")],
     ]
     t_info = Table(data_info, colWidths=[120, 320])
     t_info.setStyle(TableStyle([

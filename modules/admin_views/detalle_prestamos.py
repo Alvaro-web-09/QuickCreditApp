@@ -96,20 +96,14 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 0. FUNCIONES DE ACCIÓN (Lógica de DB - INTACTA)
+# 0. FUNCIONES DE ACCIÓN
 # ==========================================
 def ajustar_vencimiento_individual(prestamo_id, fecha_actual_venc):
-    """
-    Suma 1 día a la fecha de vencimiento en Supabase.
-    """
     supabase = get_db_client()
     try:
-        # Convertimos el valor actual a objeto fecha
         venc_dt = pd.to_datetime(fecha_actual_venc).date()
-        # Sumamos un día y formateamos para la DB
         nueva_fecha = (venc_dt + timedelta(days=1)).strftime('%Y-%m-%d')
         
-        # Actualizamos en la tabla 'prestamos'
         supabase.table("prestamos").update({
             "fecha_vencimiento": nueva_fecha
         }).eq("id", prestamo_id).execute()
@@ -119,16 +113,16 @@ def ajustar_vencimiento_individual(prestamo_id, fecha_actual_venc):
         return False, str(e)
 
 # ==========================================
-# 1. CARGA DE DATOS RELACIONALES (ACTUALIZADA)
+# 1. CARGA DE DATOS RELACIONALES
 # ==========================================
 def cargar_data_prestamos_full():
     supabase = get_db_client()
     
-    # A. Préstamos (Al traer * ya incluye codigo_prestamo)
+    # A. Préstamos 
     r_prest = supabase.table("prestamos").select("*").execute()
     df_prest = pd.DataFrame(r_prest.data)
     
-    # B. Clientes (NUEVO: Añadimos codigo_cliente a la consulta)
+    # B. Clientes 
     r_cli = supabase.table("clientes").select("id, nombre, cedula, telefono, codigo_cliente").execute()
     df_cli = pd.DataFrame(r_cli.data)
     
@@ -139,14 +133,17 @@ def cargar_data_prestamos_full():
     # D. Pagos
     r_pagos = supabase.table("pagos").select("*").execute()
     df_pagos = pd.DataFrame(r_pagos.data)
+
+    # E. Visitas (NUEVO: Cargamos la bitácora)
+    r_visitas = supabase.table("bitacora_visitas").select("*").execute()
+    df_visitas = pd.DataFrame(r_visitas.data)
     
-    return df_prest, df_cli, df_usu, df_pagos
+    return df_prest, df_cli, df_usu, df_pagos, df_visitas
 
 # ==========================================
 # 2. VISTA DETALLADA
 # ==========================================
 def mostrar_detalle_prestamos():
-    # INYECTAMOS EL CSS AL INICIO
     inject_custom_css()
 
     st.markdown("## Explorador de Préstamos")
@@ -154,7 +151,8 @@ def mostrar_detalle_prestamos():
 
     with st.spinner("Procesando cartera..."):
         try:
-            df_prest, df_cli, df_usu, df_pagos = cargar_data_prestamos_full()
+            # Desempaquetamos df_visitas también
+            df_prest, df_cli, df_usu, df_pagos, df_visitas = cargar_data_prestamos_full()
         except Exception as e:
             st.error(f"Error cargando datos: {e}")
             return
@@ -167,7 +165,6 @@ def mostrar_detalle_prestamos():
     # 3. PREPARACIÓN DE LA DATA
     # ==========================================
     
-    # A. Merge con Clientes
     df_full = df_prest.merge(
         df_cli, 
         left_on='cliente_id', 
@@ -180,7 +177,6 @@ def mostrar_detalle_prestamos():
     else:
         df_full['cliente_nombre'] = "Desconocido"
 
-    # B. Merge con Vendedores
     df_full = df_full.merge(
         df_usu, 
         left_on='cobrador_id', 
@@ -193,15 +189,12 @@ def mostrar_detalle_prestamos():
     else:
         df_full['vendedor_nombre'] = "Sin asignar"
 
-    # C. CÁLCULOS Y CONVERSIONES
     if not df_full.empty:
-        # Asegurar que existan las columnas de código (por si hay registros muy antiguos)
         if 'codigo_prestamo' not in df_full.columns:
             df_full['codigo_prestamo'] = 'N/A'
         if 'codigo_cliente' not in df_full.columns:
             df_full['codigo_cliente'] = 'N/A'
 
-        # SOLUCIÓN 1: Limpiar decimales fantasmas (.0) y forzar texto para que el buscador no falle
         df_full['codigo_prestamo'] = df_full['codigo_prestamo'].astype(str).str.replace(r'\.0$', '', regex=True)
         df_full['codigo_cliente'] = df_full['codigo_cliente'].astype(str).str.replace(r'\.0$', '', regex=True)
 
@@ -224,11 +217,10 @@ def mostrar_detalle_prestamos():
         )
 
     # ==========================================
-    # 4. FILTROS AVANZADOS (ACTUALIZADOS)
+    # 4. FILTROS AVANZADOS 
     # ==========================================
     with st.expander("🔎 Filtros de Búsqueda y Fechas", expanded=True):
         c1, c2, c3 = st.columns(3)
-        # Indicamos que se puede buscar por código
         search_term = c1.text_input("Buscar (Código, Cliente o ID):")
         
         lista_vendedores = ["Todos"]
@@ -242,16 +234,13 @@ def mostrar_detalle_prestamos():
         filtro_estado = c3.multiselect("Estado:", options=lista_estados, default=lista_estados)
 
         c4, c5 = st.columns([2, 1])
-        # SOLUCIÓN 2: Rango de fechas por defecto a los últimos 30 días
         hoy = datetime.now().date()
         date_range = c4.date_input("📅 Rango de Fecha de Inicio:", value=(hoy - timedelta(days=30), hoy), help="Selecciona una fecha inicio y fin.")
         ocultar_pagados = c5.toggle("Ocultar pagados (Saldo 0)", value=False)
 
-    # --- APLICACIÓN DE FILTROS ---
     df_view = df_full.copy()
     if search_term:
         term = search_term.lower()
-        # Permitimos que el buscador lea código de préstamo y de cliente
         df_view = df_view[
             df_view['cliente_nombre'].astype(str).str.lower().str.contains(term, na=False) |
             df_view['codigo_prestamo'].astype(str).str.lower().str.contains(term, na=False) |
@@ -269,15 +258,13 @@ def mostrar_detalle_prestamos():
         df_view = df_view[(df_view['fecha_inicio_dt'] >= start_date) & (df_view['fecha_inicio_dt'] <= end_date)]
 
     # ==========================================
-    # 5. TABLA PRINCIPAL (ACTUALIZADA)
+    # 5. TABLA PRINCIPAL 
     # ==========================================
     st.markdown(f"### 📋 Listado ({len(df_view)} préstamos encontrados)")
     
-    # Reemplazamos las columnas de UUIDs feos por los Códigos
     column_config = {
         "codigo_prestamo": st.column_config.TextColumn("Cód. Préstamo", width="small"),
         "codigo_cliente": st.column_config.TextColumn("Cód. Cliente", width="small"),
-        # SOLUCIÓN 3: Agregamos la columna de fecha a la configuración
         "fecha_inicio_dt": st.column_config.DateColumn("Fecha Préstamo", format="DD/MM/YYYY"),
         "cliente_nombre": st.column_config.TextColumn("Cliente", width="medium"),
         "vendedor_nombre": st.column_config.TextColumn("Vendedor", width="medium"),
@@ -288,7 +275,6 @@ def mostrar_detalle_prestamos():
         "progreso": st.column_config.ProgressColumn("Progreso Pago", format="%.0f%%", min_value=0, max_value=100),
     }
     
-    # Incluimos 'fecha_inicio_dt' en las columnas visibles
     cols_to_show = ['codigo_prestamo', 'codigo_cliente', 'fecha_inicio_dt', 'cliente_nombre', 'vendedor_nombre', 'estado', 'monto_total_deuda', 'saldo_pendiente', 'cuotas_restantes', 'progreso']
     cols_finales = [c for c in cols_to_show if c in df_view.columns]
 
@@ -302,16 +288,16 @@ def mostrar_detalle_prestamos():
     )
 
     # ==========================================
-    # 6. DETALLE (DRILL-DOWN) + AJUSTE DE FECHA
+    # 6. DETALLE (DRILL-DOWN) + BITÁCORA COMBINADA
     # ==========================================
     if event.selection.rows:
         index_seleccionado = event.selection.rows[0]
         row_data = df_view.iloc[index_seleccionado]
         
-        # Guardamos el ID real de la base de datos para la lógica (ajuste de fecha, buscar pagos, etc.)
         id_prestamo_sel = row_data['id'] 
+        id_cliente_sel = row_data['cliente_id']
+        fecha_inicio_sel = str(row_data.get('fecha_inicio', '1900-01-01'))
         
-        # Obtenemos los códigos para mostrarlos en pantalla
         codigo_prest_sel = row_data.get('codigo_prestamo', 'N/A')
         codigo_cli_sel = row_data.get('codigo_cliente', 'N/A')
         cliente_sel = row_data['cliente_nombre']
@@ -319,15 +305,11 @@ def mostrar_detalle_prestamos():
         
         st.write("") 
         st.divider()
-        # Mostramos el código del préstamo en el título principal
         st.markdown(f"### 👤 Gestión del Préstamo: **{codigo_prest_sel}** | {cliente_sel}")
-        
-        pagos_asociados = df_pagos[df_pagos['prestamo_id'] == id_prestamo_sel].copy()
         
         c1, c2 = st.columns([1, 2], gap="large")
         
         with c1:
-            # --- TARJETA 1: DATOS OPERATIVOS (ACTUALIZADA) ---
             st.markdown(f"""
             <div class="metric-card card-blue">
                 <div class="card-header-title">Resumen Operativo</div>
@@ -358,7 +340,6 @@ def mostrar_detalle_prestamos():
             </div>
             """, unsafe_allow_html=True)
 
-            # --- SECCIÓN DE ACCIÓN ---
             st.markdown("##### Ajuste Rápido")
             st.caption("Extensión administrativa de 24 horas.")
             
@@ -379,24 +360,54 @@ def mostrar_detalle_prestamos():
                     st.error("Fecha inválida.")
 
         with c2:
-            # --- TARJETA 2: BITÁCORA ---
             st.markdown("""
             <div class="metric-card card-green" style="padding-bottom: 5px;">
-                <div class="card-header-title">Bitácora de Pagos</div>
+                <div class="card-header-title">Bitácora de Movimientos</div>
             </div>
             """, unsafe_allow_html=True)
 
-            if not pagos_asociados.empty:
-                if 'fecha_pago' in pagos_asociados.columns:
-                    pagos_asociados['fecha_pago'] = pd.to_datetime(pagos_asociados['fecha_pago'])
-                    pagos_asociados = pagos_asociados.sort_values(by='fecha_pago', ascending=False)
+            # --- NUEVA LÓGICA: Combinar Pagos y Visitas ---
+            historial_mixto = []
+
+            # 1. Agregar Pagos
+            pagos_asociados = df_pagos[df_pagos['prestamo_id'] == id_prestamo_sel]
+            for _, p in pagos_asociados.iterrows():
+                historial_mixto.append({
+                    "Fecha": p.get('fecha_pago'),
+                    "Tipo": "Abono",
+                    "Monto": float(p.get('monto', 0)),
+                    "Registro": p.get('fecha_hora') or p.get('created_at')
+                })
+
+            # 2. Agregar Visitas Sin Pago (posteriores a la fecha de inicio del préstamo)
+            if not df_visitas.empty and 'cliente_id' in df_visitas.columns:
+                visitas_filtradas = df_visitas[
+                    (df_visitas['cliente_id'] == id_cliente_sel) & 
+                    (df_visitas['estado_visita'] == 'No Pago') &
+                    (df_visitas['fecha'] >= fecha_inicio_sel)
+                ]
+                for _, v in visitas_filtradas.iterrows():
+                    historial_mixto.append({
+                        "Fecha": v.get('fecha'),
+                        "Tipo": "Visita Sin Cobro",
+                        "Monto": 0.0,
+                        "Registro": v.get('created_at') or v.get('fecha')
+                    })
+
+            # 3. Construir y Renderizar DataFrame Combinado
+            df_historial = pd.DataFrame(historial_mixto)
+
+            if not df_historial.empty:
+                df_historial['Fecha'] = pd.to_datetime(df_historial['Fecha'], errors='coerce')
+                df_historial = df_historial.sort_values(by=['Fecha', 'Registro'], ascending=[False, False])
                 
                 st.dataframe(
-                    pagos_asociados[['fecha_pago', 'monto', 'fecha_hora']],
+                    df_historial,
                     column_config={
-                        "fecha_pago": st.column_config.DateColumn("Fecha Pago"),
-                        "monto": st.column_config.NumberColumn("Monto Abonado", format="C$ %.2f"),
-                        "fecha_hora": st.column_config.DatetimeColumn("Registro Sistema", format="D MMM YYYY, h:mm a")
+                        "Fecha": st.column_config.DateColumn("Fecha"),
+                        "Tipo": st.column_config.TextColumn("Tipo Movimiento"),
+                        "Monto": st.column_config.NumberColumn("Monto", format="C$ %.2f"),
+                        "Registro": st.column_config.DatetimeColumn("Hora Sistema", format="D MMM YYYY, h:mm a")
                     },
                     use_container_width=True,
                     hide_index=True,
@@ -405,6 +416,6 @@ def mostrar_detalle_prestamos():
             else:
                 st.markdown("""
                 <div class="empty-state">
-                    ℹ️ Este préstamo no tiene pagos registrados en el sistema todavía.
+                    ℹ️ Este préstamo no tiene pagos ni visitas registradas aún.
                 </div>
                 """, unsafe_allow_html=True)

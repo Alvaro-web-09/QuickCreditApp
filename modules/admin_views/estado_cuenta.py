@@ -48,8 +48,8 @@ def generar_pdf_estado_cuenta(cliente_info, prestamo_info, cobrador_asignado, df
     
     img_logo = Image(logo_file, width=3.5*cm, height=3.5*cm, kind='proportional') if os.path.exists(logo_file) else Paragraph("", styles['Normal'])
     
-    # 🔥 CORRECCIÓN: Si no hay código, crea uno corto con "CM-" usando el ID
-    codigo_prestamo_pdf = prestamo_info.get('codigo_prestamo') or f"CM-{prestamo_info['id'][:8].upper()}"
+    # Textos Encabezado
+    codigo_prestamo_pdf = prestamo_info.get('codigo_prestamo', prestamo_info['id'].split('-')[0].upper())
     
     datos_empresa = [
         Paragraph("ESTADO DE CUENTA", style_titulo),
@@ -70,9 +70,7 @@ def generar_pdf_estado_cuenta(cliente_info, prestamo_info, cobrador_asignado, df
     story.append(Spacer(1, 15))
 
     # 2. INFORMACIÓN DEL CLIENTE Y CRÉDITO
-    # 🔥 CORRECCIÓN: Código corto de cliente
-    codigo_cli_pdf = cliente_info.get('codigo_cliente') or f"CM-{cliente_info.get('id', 'S/C')[:8].upper()}"
-    
+    codigo_cli_pdf = cliente_info.get('codigo_cliente', 'S/C')
     txt_cliente = f"""
     <b>CLIENTE:</b><br/>
     {codigo_cli_pdf} - {cliente_info['nombre']}<br/>
@@ -190,11 +188,7 @@ def mostrar_estado_cuenta():
             st.info("No se encontraron clientes registrados.")
             return
 
-        # 🔥 CORRECCIÓN: Crea el código CM- si AppSheet lo dejó en null
-        opciones_cliente = {}
-        for c in clientes:
-            cod_cli = c.get('codigo_cliente') or f"CM-{c['id'][:8].upper()}"
-            opciones_cliente[f"[{cod_cli}] {c['nombre']}"] = c['id']
+        opciones_cliente = {f"[{c.get('codigo_cliente', 'S/C')}] {c['nombre']}": c['id'] for c in clientes} 
         
         # --- UI SELECCIÓN CON EXPANSOR ---
         with st.expander("🔍 Filtros de Búsqueda (Clic para ocultar/mostrar)", expanded=True):
@@ -229,8 +223,7 @@ def mostrar_estado_cuenta():
             mapa_prestamos = {}
             for p in prestamos:
                 icono = "🟢" if p['estado'] == 'activo' else "🏁" if p['estado'] == 'pagado' else "🔴"
-                # 🔥 CORRECCIÓN: Fuerza el CM- si el código de préstamo está vacío
-                cod_p = p.get('codigo_prestamo') or f"CM-{p['id'][:8].upper()}"
+                cod_p = p.get('codigo_prestamo', 'S/C')
                 lbl = f"{icono} {cod_p} | {p['fecha_inicio']} | C$ {p['monto_prestado']:,.0f}"
                 mapa_prestamos[lbl] = p
             
@@ -263,7 +256,6 @@ def mostrar_estado_cuenta():
 
     # --- PROCESAMIENTO DE MOVIMIENTOS ---
     pagos = supabase.table("pagos").select("*").eq("prestamo_id", prestamo_id).execute().data
-    
     visitas = supabase.table("bitacora_visitas")\
         .select("fecha, estado_visita, cobrador_id")\
         .eq("cliente_id", cliente_id)\
@@ -271,7 +263,7 @@ def mostrar_estado_cuenta():
         .execute().data
 
     # Cálculos Financieros
-    total_pagado = sum([float(p.get('monto', 0)) for p in pagos])
+    total_pagado = sum([p['monto'] for p in pagos])
     saldo_actual = prestamo_sel['monto_prestado'] - total_pagado
     if 'saldo_pendiente' in prestamo_sel:
         saldo_actual = prestamo_sel['saldo_pendiente']
@@ -280,31 +272,24 @@ def mostrar_estado_cuenta():
     if prestamo_sel['monto_prestado'] > 0:
         porcentaje_pagado = min(total_pagado / prestamo_sel['monto_prestado'], 1.0)
 
-    # --- ALERTA DE MORA / ESTADO ---
+    # --- NUEVO: ALERTA DE MORA / ESTADO ---
     if prestamo_sel['estado'] == 'pagado':
         st.success("🎉 Este crédito ya ha sido cancelado en su totalidad.")
     else:
         if pagos:
-            # Buscamos la fecha correcta del último pago
-            fechas_pagos = []
-            for p in pagos:
-                f = p.get('fecha_pago') or p.get('fecha_hora') or p.get('created_at')
-                if f:
-                    fechas_pagos.append(pd.to_datetime(f).tz_localize(None))
-            
-            if fechas_pagos:
-                ultima_fecha = max(fechas_pagos)
-                dias_sin_pago = (datetime.now() - ultima_fecha).days
-                if dias_sin_pago > 7:
-                    st.error(f"⚠️ **Alerta:** El cliente lleva **{dias_sin_pago} días** sin registrar un abono.")
-                elif dias_sin_pago > 3:
-                    st.warning(f"⏳ **Atención:** El último pago fue hace **{dias_sin_pago} días**.")
-                else:
-                    st.info(f"✅ **Al día:** Último pago registrado hace **{dias_sin_pago} días**.")
+            fechas_pagos = [pd.to_datetime(p['fecha_pago']) for p in pagos]
+            ultima_fecha = max(fechas_pagos)
+            dias_sin_pago = (datetime.now() - ultima_fecha).days
+            if dias_sin_pago > 7:
+                st.error(f"⚠️ **Alerta:** El cliente lleva **{dias_sin_pago} días** sin registrar un abono.")
+            elif dias_sin_pago > 3:
+                st.warning(f"⏳ **Atención:** El último pago fue hace **{dias_sin_pago} días**.")
+            else:
+                st.info(f"✅ **Al día:** Último pago registrado hace **{dias_sin_pago} días**.")
         else:
             st.info("No se han registrado pagos para este crédito aún.")
 
-    # --- UI: TARJETAS KPI ---
+    # --- UI: TARJETAS KPI (AHORA CON BARRA DE PROGRESO) ---
     with st.container(border=True):
         k1, k2, k3, k4 = st.columns(4)
         with k1:
@@ -316,6 +301,7 @@ def mostrar_estado_cuenta():
         with k4:
             st.metric("Estado", prestamo_sel['estado'].upper())
         
+        # Barra de progreso debajo de los KPIs
         st.progress(porcentaje_pagado, text=f"Progreso del Crédito: {int(porcentaje_pagado * 100)}%")
 
     st.write("")
@@ -336,9 +322,10 @@ def mostrar_estado_cuenta():
             "Categoria": "Ingreso"
         })
         
-    fechas_pago_registradas = set([x['Fecha'] for x in data_mix])
+    # --- PROCESAR VISITAS (CORREGIDO) ---
     for v in visitas:
-        if v.get('fecha') not in fechas_pago_registradas:
+        # Solo agregamos al historial si la visita fue explícitamente un "No Pago"
+        if v.get('estado_visita') == 'No Pago':
             c_name = mapa_usuarios.get(v.get('cobrador_id'), "Cobrador")
             data_mix.append({
                 "Fecha": v.get('fecha'),
@@ -349,21 +336,23 @@ def mostrar_estado_cuenta():
             })
 
     if data_mix:
+        
+        # --- SOLUCIÓN: CREAR EL DATAFRAME AQUÍ ---
         df = pd.DataFrame(data_mix)
-        # Limpiamos las zonas horarias para que Pandas no se confunda
-        df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce').dt.tz_localize(None)
-        df = df.sort_values("Fecha_dt", ascending=False)
+        df['Fecha_dt'] = pd.to_datetime(df['Fecha'], errors='coerce')
 
+        # --- NUEVO: FILTRO DE FECHAS ---
         c_filt, _ = st.columns([1, 2])
         with c_filt:
             filtro_tiempo = st.selectbox("📅 Rango de historial:", ["Todo el historial", "Últimos 30 días", "Últimos 7 días"])
         
-        # Filtro de tiempo alineado
-        hoy = pd.Timestamp(datetime.now().date())
+        # Aplicar filtro al DataFrame
         if filtro_tiempo == "Últimos 30 días":
-            df = df[df['Fecha_dt'] >= (hoy - pd.Timedelta(days=30))]
+            limite = pd.Timestamp(datetime.now()) - pd.Timedelta(days=30)
+            df = df[df['Fecha_dt'] >= limite]
         elif filtro_tiempo == "Últimos 7 días":
-            df = df[df['Fecha_dt'] >= (hoy - pd.Timedelta(days=7))]
+            limite = pd.Timestamp(datetime.now()) - pd.Timedelta(days=7)
+            df = df[df['Fecha_dt'] >= limite]
 
         if df.empty:
             st.warning("No hay movimientos registrados en el rango de tiempo seleccionado.")
@@ -372,58 +361,46 @@ def mostrar_estado_cuenta():
 
             with col_izq:
                 st.markdown("#### Comportamiento de Pago")
+                
                 fig = go.Figure()
                 
-                # --- PROCESAR ABONOS ---
-                df_abonos = df[df['Categoria'] == 'Ingreso'].copy()
-                df_agrupado = pd.DataFrame() 
-                
+                df_abonos = df[df['Categoria'] == 'Ingreso']
                 if not df_abonos.empty:
-                    df_abonos['Fecha_dia'] = df_abonos['Fecha_dt'].dt.strftime('%d/%m/%Y')
-                    df_agrupado = df_abonos.groupby('Fecha_dia')['Monto'].sum().reset_index()
-
                     fig.add_trace(go.Bar(
-                        x=df_agrupado['Fecha_dia'], 
-                        y=df_agrupado['Monto'],
+                        x=df_abonos['Fecha_dt'], 
+                        y=df_abonos['Monto'],
                         name='Abono Recibido',
-                        marker_color='#4CAF50',
-                        text=df_agrupado['Monto'].apply(lambda x: f"C$ {x:,.0f}"), 
-                        textposition='auto'
+                        marker_color='#4CAF50'
                     ))
                 
-                # --- PROCESAR VISITAS (INCIDENTES) ---
-                df_incidentes = df[df['Categoria'] == 'Incidencia'].copy()
+                df_incidentes = df[df['Categoria'] == 'Incidencia']
                 if not df_incidentes.empty:
-                    df_incidentes['Fecha_dia'] = df_incidentes['Fecha_dt'].dt.strftime('%d/%m/%Y')
-                    y_val = df_agrupado['Monto'].max() if not df_agrupado.empty else 100
-                    
+                    y_val = df_abonos['Monto'].mean() if not df_abonos.empty else 100
                     fig.add_trace(go.Scatter(
-                        x=df_incidentes['Fecha_dia'], 
-                        y=[y_val] * len(df_incidentes),
+                        x=df_incidentes['Fecha_dt'], 
+                        y=[y_val]*len(df_incidentes),
                         mode='markers',
                         name='Visita Sin Pago',
-                        marker=dict(color='#D32F2F', symbol='x', size=12)
+                        marker=dict(color='#D32F2F', symbol='x', size=10)
                     ))
 
-                # --- DISEÑO DEL GRÁFICO ---
                 fig.update_layout(
                     template="plotly_white",
                     height=350,
                     margin=dict(l=20, r=20, t=20, b=20),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis_type='category', 
-                    yaxis_title="Córdobas (C$)"
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
             with col_der:
+                # --- NUEVO: GRÁFICO DE DONA ---
                 st.markdown("#### Resumen de Saldo")
                 fig_donut = go.Figure(data=[go.Pie(
                     labels=['Pagado', 'Pendiente'],
-                    values=[total_pagado, max(0, saldo_actual)], 
+                    values=[total_pagado, max(0, saldo_actual)], # max(0) evita errores si se pagó de más
                     hole=.6,
                     marker_colors=['#4CAF50', '#E0E0E0'],
-                    textinfo='none' 
+                    textinfo='none' # Mantenemos limpio el gráfico
                 )])
                 fig_donut.update_layout(
                     margin=dict(t=10, b=10, l=10, r=10),
@@ -433,30 +410,28 @@ def mostrar_estado_cuenta():
                 )
                 st.plotly_chart(fig_donut, use_container_width=True)
 
+                # Tabla debajo de la dona
                 st.markdown("#### Movimientos")
                 df_display = df[['Fecha', 'Tipo', 'Monto']].copy()
-                df_display['Fecha'] = df['Fecha_dt'].dt.strftime('%d/%m/%Y') 
-                
                 st.dataframe(
                     df_display,
                     use_container_width=True,
-                    height=180, 
+                    height=180, # Altura ajustada para que quepa bien con la dona
                     hide_index=True,
                     column_config={
                         "Monto": st.column_config.NumberColumn(format="C$ %.2f")
                     }
                 )
 
-        # --- BOTÓN DESCARGA ---
+        # --- BOTÓN DESCARGA (Intacto) ---
         st.write("---")
         c_descarga, _ = st.columns([1, 2])
         with c_descarga:
             pdf_bytes = generar_pdf_estado_cuenta(
                 {
-                    'id': cliente_id, # 🔥 Importante para que genere el código si falla
                     'nombre': datos_cliente['nombre'], 
                     'cedula': datos_cliente['cedula'], 
-                    'codigo_cliente': datos_cliente.get('codigo_cliente')
+                    'codigo_cliente': datos_cliente.get('codigo_cliente', 'S/C')
                 },
                 prestamo_sel,
                 nombre_cobrador,
@@ -464,8 +439,7 @@ def mostrar_estado_cuenta():
                 {'pagado': total_pagado, 'saldo': saldo_actual}
             )
             
-            # 🔥 CORRECCIÓN: Nombre de archivo más seguro
-            cod_file = prestamo_sel.get('codigo_prestamo') or f"CM-{prestamo_sel['id'][:8].upper()}"
+            cod_file = prestamo_sel.get('codigo_prestamo', prestamo_sel['fecha_inicio'])
             filename = f"EdoCta_{datos_cliente.get('codigo_cliente', 'SC')}_{cod_file}.pdf"
             
             st.download_button(

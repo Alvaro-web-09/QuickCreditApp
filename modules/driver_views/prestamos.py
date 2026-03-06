@@ -448,7 +448,7 @@ def mostrar_ventas():
 
         c_dias, c_freq = st.columns(2)
         with c_dias:
-            lista_dias = [24, 30, 31, 32, 33, 40]
+            lista_dias = [28, 29, 30, 31]
             idx_dias = lista_dias.index(rec_dias) if rec_dias in lista_dias else 1
             dias = st.selectbox("Plazo (Días)", lista_dias, index=idx_dias)
         

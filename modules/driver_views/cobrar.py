@@ -236,15 +236,10 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         resp_cobrador = supabase.table("usuarios").select("nombre_completo, username").eq("id", user_id).single().execute()
         nombre_cobrador = resp_cobrador.data.get('nombre_completo') or resp_cobrador.data.get('username') if resp_cobrador.data else "Driver"
 
-        # 2. Actualizar el saldo del préstamo
+        # 2. Calcular el saldo (¡Supabase ahora hace el update real!)
         saldo_anterior = prestamo['saldo_pendiente']
         nuevo_saldo = saldo_anterior - monto
-        nuevo_estado = "pagado" if nuevo_saldo <= 1 else "activo"
-        
-        supabase.table("prestamos").update({
-            "saldo_pendiente": nuevo_saldo,
-            "estado": nuevo_estado
-        }).eq("id", prestamo['id']).execute()
+        # Ya no enviamos el update desde aquí para evitar duplicar el descuento del trigger
 
         # 3. Insertar el pago
         datos_pago = {
