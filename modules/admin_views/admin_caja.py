@@ -33,8 +33,11 @@ def mostrar_gestion_caja():
             seleccion = st.selectbox("Seleccionar Responsable", options=list(mapa_drivers.keys()))
             driver_actual = mapa_drivers[seleccion]
             driver_id = driver_actual['id']
-            # Traemos el saldo directamente del objeto consultado
-            saldo_actual = float(driver_actual.get('saldo_actual', 0.0))
+            
+            # --- SOLUCIÓN AQUÍ ---
+            # Extraemos el valor crudo primero. Si es None, usamos 0.0 por defecto.
+            saldo_crudo = driver_actual.get('saldo_actual')
+            saldo_actual = float(saldo_crudo if saldo_crudo is not None else 0.0)
 
         with col_info:
             st.metric(
