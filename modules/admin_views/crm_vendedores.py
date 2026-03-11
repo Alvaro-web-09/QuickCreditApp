@@ -103,6 +103,27 @@ def cargar_datos_crm():
     return df_usuarios, df_clientes, df_prestamos, df_pagos, df_visitas, df_solicitudes
 
 # ==========================================
+# CALLBACK PARA TAB 4 (ACTUALIZAR PERMISOS)
+# ==========================================
+def actualizar_permisos(id_chofer, toggle_key, nombre_chofer):
+    """Función que se ejecuta automáticamente cuando el admin hace click en el toggle."""
+    nuevo_estado = st.session_state[toggle_key]
+    
+    try:
+        supabase = get_db_client()
+        # Actualizamos Supabase
+        supabase.table("usuarios").update({"auto_aprobacion": nuevo_estado}).eq("id", id_chofer).execute()
+        
+        # Limpiamos la caché para que la interfaz tome los datos frescos
+        cargar_datos_crm.clear() 
+        
+        st.toast(f"✅ Permisos actualizados para {nombre_chofer}")
+        
+    except Exception as e:
+        st.error(f"Error al actualizar permisos: {e}")
+
+
+# ==========================================
 # 2. VISTA PRINCIPAL (DASHBOARD)
 # ==========================================
 def mostrar_crm_vendedores():
@@ -292,9 +313,6 @@ def mostrar_crm_vendedores():
 
     # --- TAB 1: GRÁFICOS ---
     with tab1:
-        # ==========================================
-        # GRÁFICO SUPERIOR (ANCHO COMPLETO)
-        # ==========================================
         st.markdown("#### Tendencia Financiera Diaria (Cobros, Intereses y Flujo)")
         
         if not df_pay_filtrado.empty and not df_prest.empty:
@@ -372,19 +390,12 @@ def mostrar_crm_vendedores():
         else:
             st.info("No hay suficientes datos de pagos o préstamos para graficar el periodo seleccionado.")
 
-        # ==========================================
-        # SEPARADOR VISUAL
-        # ==========================================
         st.markdown("<br><hr><br>", unsafe_allow_html=True)
 
-        # ==========================================
-        # GRÁFICO INFERIOR (CENTRADITO Y BONITO)
-        # ==========================================
-        # Creamos 3 columnas. La del medio (proporción 2) es donde vivirá el gráfico.
+        # GRÁFICO INFERIOR
         col_espacio1, col_centro, col_espacio2 = st.columns([1, 2, 1])
         
         with col_centro:
-            # Título centrado usando HTML
             st.markdown("<h4 style='text-align: center;'>Efectividad de Visitas</h4>", unsafe_allow_html=True)
             
             if not df_visit.empty:
@@ -401,13 +412,9 @@ def mostrar_crm_vendedores():
                         hole=0.4
                     )
                     fig_pie = aplicar_tema_plotly(fig_pie)
-                    
-                    # Ajustamos los márgenes del pastel para que se vea más limpio
                     fig_pie.update_layout(margin=dict(t=20, b=20, l=0, r=0))
                     
                     st.plotly_chart(fig_pie, use_container_width=True)
-                    
-                    # Caption centrado
                     st.markdown("<p style='text-align: center; font-size: 0.8em; opacity: 0.8;'>Distribución porcentual según el resultado reportado en campo.</p>", unsafe_allow_html=True)
                 else:
                     st.info("Sin registros de visitas en este periodo.")
@@ -424,25 +431,16 @@ def mostrar_crm_vendedores():
                 how='left', suffixes=('', '_cliente') 
             )
             
-            # ==========================================
-            # NUEVO GRÁFICO: SALUD DE LA CARTERA POR ESTADO
-            # ==========================================
             st.markdown("##### Distribución del Saldo por Estado Financiero")
-            
-            # Agrupar el saldo pendiente por el estado del crédito
             df_estado = df_show.groupby('estado')['saldo_pendiente'].sum().reset_index()
-            
-            # Filtramos para no mostrar estados que no tienen saldo pendiente
             df_estado = df_estado[df_estado['saldo_pendiente'] > 0]
             
             if not df_estado.empty:
-                # Usamos un gráfico de anillo para una vista moderna
                 fig_estado = px.pie(
                     df_estado, 
                     values='saldo_pendiente', 
                     names='estado',
                     hole=0.45,
-                    # Usamos una paleta secuencial basada en la marca, pero dejando que Plotly asigne colores por estado
                     color_discrete_sequence=[BRAND_PRIMARY, BRAND_TEXT, '#A5D6A7', '#81C784', '#388E3C'] 
                 )
                 
@@ -461,7 +459,6 @@ def mostrar_crm_vendedores():
                 
                 fig_estado = aplicar_tema_plotly(fig_estado)
                 
-                # Lo ponemos en una columna central para que no ocupe todo el ancho y se vea más estético
                 col_izq, col_graf, col_der = st.columns([1, 2, 1])
                 with col_graf:
                     st.plotly_chart(fig_estado, use_container_width=True)
@@ -470,9 +467,6 @@ def mostrar_crm_vendedores():
 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # ==========================================
-            # TABLA DE DATOS
-            # ==========================================
             st.markdown("##### Detalle General")
             columnas_deseadas = ['id', 'nombre_completo', 'monto_prestado', 'saldo_pendiente', 'fecha_inicio', 'estado']
             cols_finales = [c for c in columnas_deseadas if c in df_show.columns]
@@ -499,7 +493,6 @@ def mostrar_crm_vendedores():
         if not df_solic.empty:
             df_sol_show = df_solic.copy()
             
-            # --- Preparación de datos (Lo que ya tenías) ---
             if not df_clients.empty:
                 df_sol_show = df_sol_show.merge(
                     df_clients[['id', 'nombre_completo']], 
@@ -525,20 +518,16 @@ def mostrar_crm_vendedores():
                     (df_sol_show['fecha_solicitud'] <= rango_fechas[1])
                 ]
 
-            # ==========================================
-            # NUEVO: KPIs DE SOLICITUDES
-            # ==========================================
             if not df_sol_show.empty:
                 st.markdown("##### Resumen de Gestión")
                 
-                # Rellenar vacíos por si acaso (evitar 'undefined')
                 df_sol_show['estado'] = df_sol_show['estado'].fillna('sin_estado').str.lower()
                 df_sol_show['tipo_solicitud'] = df_sol_show['tipo_solicitud'].fillna('sin_tipo')
                 
                 tot_sol = len(df_sol_show)
                 tot_aprob = len(df_sol_show[df_sol_show['estado'] == 'aprobada'])
                 tot_rech = len(df_sol_show[df_sol_show['estado'] == 'rechazada'])
-                tot_pend = tot_sol - tot_aprob - tot_rech # Lo que no está ni aprobado ni rechazado
+                tot_pend = tot_sol - tot_aprob - tot_rech 
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Total Solicitudes", tot_sol)
@@ -548,9 +537,6 @@ def mostrar_crm_vendedores():
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
-                # ==========================================
-                # NUEVO: GRÁFICOS DE ANÁLISIS
-                # ==========================================
                 col_graf1, col_graf2 = st.columns(2)
                 
                 with col_graf1:
@@ -560,7 +546,6 @@ def mostrar_crm_vendedores():
                     
                     fig_est = px.pie(
                         df_est, values='cantidad', names='estado', hole=0.4,
-                        # Usamos rojo para rechazos y colores de marca para lo demás
                         color_discrete_sequence=[BRAND_PRIMARY, '#e57373', BRAND_TEXT, '#81C784']
                     )
                     fig_est.update_traces(textposition='inside', textinfo='percent+label')
@@ -586,9 +571,6 @@ def mostrar_crm_vendedores():
 
                 st.markdown("<hr>", unsafe_allow_html=True)
 
-            # ==========================================
-            # TABLA DE DATOS (La que ya tenías)
-            # ==========================================
             st.markdown("##### Detalle de Registros")
             cols_sol = ['nombre_reporte', 'monto_solicitado', 'fecha_solicitud', 'estado', 'tipo_solicitud']
             cols_finales_sol = [c for c in cols_sol if c in df_sol_show.columns]
@@ -612,12 +594,10 @@ def mostrar_crm_vendedores():
         st.markdown("#### Configuración de Permisos")
         st.info("Activa o desactiva la capacidad de cada gestor para auto-aprobar préstamos directamente desde su dispositivo.")
         
-        # Filtramos solo a los usuarios que son choferes/drivers
         if not df_users.empty and 'rol' in df_users.columns:
             df_drivers = df_users[df_users['rol'] == 'driver']
             
             if not df_drivers.empty:
-                # Encabezados de tabla limpia
                 col_nombre_hdr, col_toggle_hdr = st.columns([3, 1])
                 col_nombre_hdr.markdown("**Nombre del Gestor**")
                 col_toggle_hdr.markdown("**Permiso de Auto-Aprobación**")
@@ -627,6 +607,7 @@ def mostrar_crm_vendedores():
                     estado_actual = bool(row.get('auto_aprobacion', False))
                     id_chofer = row['id']
                     nombre_chofer = row['nombre_completo']
+                    toggle_key = f"toggle_{id_chofer}" 
                     
                     col_nombre, col_toggle = st.columns([3, 1])
                     
@@ -634,25 +615,14 @@ def mostrar_crm_vendedores():
                         st.markdown(f"<p style='margin-top: 10px;'>{nombre_chofer}</p>", unsafe_allow_html=True)
                         
                     with col_toggle:
-                        # Creamos el toggle. Si el admin lo cambia, 'nuevo_estado' captura el nuevo valor
-                        nuevo_estado = st.toggle("Habilitar", value=estado_actual, key=f"toggle_{id_chofer}")
-                        
-                        # Si el estado del toggle es diferente al que vino de la base de datos:
-                        if nuevo_estado != estado_actual:
-                            try:
-                                supabase = get_db_client()
-                                # Actualizamos Supabase
-                                supabase.table("usuarios").update({"auto_aprobacion": nuevo_estado}).eq("id", id_chofer).execute()
-                                
-                                # ⚠️ SÚPER IMPORTANTE: Limpiamos la caché para que el CRM vuelva a descargar 
-                                # los datos frescos y muestre el cambio sin esperar los 5 minutos del TTL.
-                                cargar_datos_crm.clear() 
-                                
-                                st.toast(f"✅ Permisos actualizados para {nombre_chofer}")
-                                st.rerun() # Recargamos la interfaz
-                                
-                            except Exception as e:
-                                st.error(f"Error al actualizar permisos: {e}")
+                        # Se utiliza el parámetro on_change con el callback definido arriba
+                        st.toggle(
+                            "Habilitar", 
+                            value=estado_actual, 
+                            key=toggle_key,
+                            on_change=actualizar_permisos,
+                            args=(id_chofer, toggle_key, nombre_chofer)
+                        )
                     
                     st.markdown("<hr style='margin: 0px; opacity: 0.3;'>", unsafe_allow_html=True)
             else:
