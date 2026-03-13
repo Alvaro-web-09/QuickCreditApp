@@ -219,7 +219,6 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, cobrador_nombre):
     st.markdown(html_content, unsafe_allow_html=True)
     
     if st.button("Finalizar", type="primary", use_container_width=True):
-        st.session_state['transaccion_activa'] = None
         st.rerun()
 
 # ==========================================
@@ -236,10 +235,9 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         resp_cobrador = supabase.table("usuarios").select("nombre_completo, username").eq("id", user_id).single().execute()
         nombre_cobrador = resp_cobrador.data.get('nombre_completo') or resp_cobrador.data.get('username') if resp_cobrador.data else "Driver"
 
-        # 2. Calcular el saldo (¡Supabase ahora hace el update real!)
+        # 2. Calcular el saldo
         saldo_anterior = prestamo['saldo_pendiente']
         nuevo_saldo = saldo_anterior - monto
-        # Ya no enviamos el update desde aquí para evitar duplicar el descuento del trigger
 
         # 3. Insertar el pago
         datos_pago = {
@@ -293,8 +291,15 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         )
         enviar_reporte_telegram(mensaje, foto_bytes)
 
-        # 7. Mostrar Popup
-        mostrar_popup_exito(cliente['nombre'], monto, nuevo_saldo, nombre_cobrador)
+        # 7. PREPARAR POPUP Y SALIR INMEDIATAMENTE PARA EVITAR DOBLE CLICK
+        st.session_state['datos_exito'] = {
+            'cliente': cliente['nombre'],
+            'monto': monto,
+            'nuevo_saldo': nuevo_saldo,
+            'cobrador': nombre_cobrador
+        }
+        st.session_state['transaccion_activa'] = None # Salimos del cliente
+        st.rerun() # Forzamos recarga instantánea
 
     except Exception as e:
         st.error(f"⚠️ Error CRÍTICO al guardar: {e}")
@@ -335,31 +340,39 @@ def mostrar_formulario_pago(prestamo, user_id):
         </div>
     """, unsafe_allow_html=True)
 
-    # NUEVO: Barra de progreso de Streamlit
+    # Barra de progreso de Streamlit
     st.markdown(f"<p style='font-size: 13px; color: #8D99AE; font-weight: 600; margin-bottom: -10px;'>Progreso del Préstamo: {porcentaje_avance}%</p>", unsafe_allow_html=True)
     st.progress(porcentaje_avance / 100.0)
     st.write("")
 
-    # NUEVO: Alerta de renovación
+    # Alerta de renovación
     if saldo_actual <= (cuota * 2) and saldo_actual > 0:
         st.info("🎯 **¡Atención!** Este cliente está a punto de cancelar su préstamo. ¡Buen momento para ofrecer una renovación!", icon="🎉")
 
-    with st.form("form_cobro"):
-        st.markdown('<div class="method-badge">MÉTODO: EFECTIVO</div>', unsafe_allow_html=True)
-        
-        st.write("**Detalles del Pago**")
-        monto = st.number_input("Monto Recibido (C$)", min_value=1.0, value=float(cuota), step=10.0)
-        nota = st.text_input("Nota del cobro (Opcional)")
-        
-        st.write("")
-        st.write("**Comprobante**")
+    # === ELIMINAMOS EL st.form Y USAMOS COMPONENTES NORMALES ===
+    st.markdown('<div class="method-badge">MÉTODO: EFECTIVO</div>', unsafe_allow_html=True)
+    
+    st.write("**Detalles del Pago**")
+    monto = st.number_input("Monto Recibido (C$)", min_value=1.0, value=float(cuota), step=10.0)
+    nota = st.text_input("Nota del cobro (Opcional)")
+    
+    st.write("")
+    st.write("**Comprobante**")
+    
+    # --- AHORA SÍ FUNCIONARÁ AL INSTANTE ---
+    activar_camara = st.toggle("📸 Activar cámara para tomar foto")
+    foto = None
+    
+    if activar_camara:
         foto = st.camera_input("Tomar foto", label_visibility="collapsed")
-        
-        st.write("") 
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        if st.form_submit_button("REGISTRAR PAGO", type="primary", use_container_width=True):
-            procesar_pago(prestamo, monto, "Efectivo", nota, foto, user_id)
+    # -----------------------------------------
+    
+    st.write("") 
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Usamos st.button en lugar de st.form_submit_button
+    if st.button("REGISTRAR PAGO", type="primary", use_container_width=True):
+        procesar_pago(prestamo, monto, "Efectivo", nota, foto, user_id)
 
 # ==========================================
 # 5. VISTA: LISTA DE CLIENTES
@@ -415,7 +428,7 @@ def mostrar_lista_clientes(user_id):
         saldo = p['saldo_pendiente']
         prestamo_id = p['id']
         direccion = c.get('direccion', 'Sin dirección')
-        fecha_ult = p.get('fecha_ultimo_pago') or 'Sin registro' # NUEVO: Extraemos fecha de último pago
+        fecha_ult = p.get('fecha_ultimo_pago') or 'Sin registro'
         
         with st.container():
             col_card, col_action = st.columns([0.7, 0.3])
@@ -445,6 +458,12 @@ def mostrar_lista_clientes(user_id):
 def mostrar_cobro():
     cargar_estilos()
     user_id = st.session_state.get('user_id')
+    
+    # Revisamos si venimos de un pago exitoso para lanzar el popup
+    if 'datos_exito' in st.session_state:
+        d = st.session_state['datos_exito']
+        mostrar_popup_exito(d['cliente'], d['monto'], d['nuevo_saldo'], d['cobrador'])
+        del st.session_state['datos_exito'] # Lo borramos para que no salte dos veces
     
     if st.session_state.get('transaccion_activa'):
         mostrar_formulario_pago(st.session_state['transaccion_activa'], user_id)

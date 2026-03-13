@@ -107,22 +107,19 @@ def buscar_coincidencias(nombre, cedula, telefono):
             clean_name = nombre.strip().replace(" ", "%")
             or_conditions.append(f"nombre.ilike.*{clean_name}*") 
         if not or_conditions: return []
-        query_string = ",no".join(or_conditions)
+        query_string = ",".join(or_conditions)
         r = supabase.table("clientes").select("*").or_(query_string).execute()
         return r.data 
     except Exception as e:
         print(f"Error buscando duplicados: {e}")
         return []
 
-# 👇 FUNCIONES PARA LOS CÓDIGOS CM CORREGIDAS 👇
 def obtener_siguiente_codigo_cliente(supabase):
-    # Traemos todos y filtramos de forma segura en Python
     resp = supabase.table("clientes").select("codigo_cliente").execute()
     max_num = 0
     if resp.data:
         for c in resp.data:
             cod = c.get('codigo_cliente')
-            # Solo procesamos si el código existe y empieza con CM
             if cod and isinstance(cod, str) and cod.startswith("CM"):
                 try:
                     num = int(cod.replace("CM", ""))
@@ -147,7 +144,83 @@ def generar_codigo_prestamo(supabase, cliente_id, codigo_cliente):
     return f"{codigo_cliente}-{numero_prestamo:02d}"
 
 # ==========================================
-# 2. LÓGICA DE GUARDADO (Backend) CORREGIDA
+# 2. POP-UP DE CONFIRMACIÓN (CON REFRESH RÁPIDO)
+# ==========================================
+
+def limpiar_formulario():
+    """Limpia los inputs del formulario y variables de sesión conflictivas."""
+    keys = [
+        "input_nombre",
+        "input_cedula",
+        "input_telefono",
+        "input_direccion",
+        "input_referencias",
+        "input_contacto_emerg",
+        "input_tel_emerg",
+        "input_monto",
+        "input_tasa",
+        "input_plazo",
+        "input_modalidad",
+        "cliente_existente_selectbox",
+        "tipo_cliente_radio",
+        "alerta_duplicado_activa",
+        "datos_duplicados_encontrados"
+    ]
+    
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+
+@st.dialog("✅ Transacción Completada")
+def mostrar_popup_solicitud_exito(tipo, nombre_cliente, monto, auto_aprobado):
+    st.balloons()
+    
+    if auto_aprobado:
+        icono = "✨"
+        titulo = "Préstamo Auto-Aprobado"
+        color = "#4CAF50"
+        subtitulo = "El dinero se descontó de tu caja"
+    else:
+        icono = "⏳"
+        titulo = "Solicitud Enviada"
+        color = "#FFA000"
+        subtitulo = "Pendiente de revisión por Administración"
+
+    # 🔧 EL CAMBIO ESTÁ AQUÍ: Todo el HTML sin sangría (pegado a la izquierda)
+    html_content = f"""
+<div style="text-align: center; padding: 20px 10px;">
+<div style="color: {color}; font-size: 50px; margin-bottom: 10px;">{icono}</div>
+<h3 style="color: #0F3D3E; margin: 0; font-weight: 700; letter-spacing: -0.5px;">{titulo}</h3>
+<h1 style="color: {color}; font-size: 42px; font-weight: 800; margin: 10px 0 5px 0;">C$ {monto:,.2f}</h1>
+<p style="color: #888; font-size: 13px; margin-bottom: 25px;">{subtitulo}</p>
+
+<div style="background: #FAFAFA; padding: 20px; border-radius: 16px; text-align: left; border: 1px solid #f0f0f0;">
+<div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+<span style="color: #888; font-size: 14px;">Cliente</span>
+<span style="color: #0F3D3E; font-weight: 600; text-align: right;">{nombre_cliente}</span>
+</div>
+<div style="width: 100%; height: 1px; background: #eee; margin-bottom: 12px;"></div>
+<div style="display: flex; justify-content: space-between; align-items: center;">
+<span style="color: #888; font-size: 14px;">Tipo</span>
+<span style="color: #0F3D3E; font-weight: 600; font-size: 14px;">{tipo}</span>
+</div>
+</div>
+</div>
+"""
+    
+    # Renderizamos el HTML corregido
+    st.markdown(html_content, unsafe_allow_html=True)
+    
+    if st.button("Finalizar", type="primary", use_container_width=True):
+        limpiar_formulario()
+        
+        if 'solicitud_exito' in st.session_state:
+            del st.session_state['solicitud_exito']
+            
+        st.rerun()
+
+# ==========================================
+# 3. LÓGICA DE GUARDADO
 # ==========================================
 
 def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, modalidad, duplicado_ignorado=False):
@@ -167,6 +240,13 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
         es_confianza = user_req.data[0].get("auto_aprobacion", False)
         saldo_chofer = float(user_req.data[0].get("saldo_actual", 0.0))
 
+        nombre_real_cliente = ""
+        if tipo == "nuevo" and json_nuevo:
+            nombre_real_cliente = json_nuevo.get('nombre', 'Nuevo Cliente')
+        else:
+            cli_data = supabase.table("clientes").select("nombre").eq("id", id_existente).execute()
+            nombre_real_cliente = cli_data.data[0]['nombre'] if cli_data.data else f"ID: {id_existente}"
+
         # =======================================================
         # 🟢 RUTA VERDE (AUTO-APROBACIÓN DIRECTA)
         # =======================================================
@@ -176,10 +256,8 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                 return False
                 
             cliente_final_id = id_existente
-            nombre_cliente = f"Cliente Existente (ID: {id_existente})"
             codigo_cliente_final = None 
 
-            # A. Lógica para Cliente Nuevo
             if tipo == "nuevo" and json_nuevo:
                 codigo_cliente_final = obtener_siguiente_codigo_cliente(supabase)
                 json_nuevo['codigo_cliente'] = codigo_cliente_final
@@ -192,9 +270,7 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                     st.error("Error al crear el cliente de forma automática.")
                     return False
                 cliente_final_id = res_cli.data[0]['id']
-                nombre_cliente = json_nuevo.get('nombre', 'Nuevo Cliente')
             
-            # B. Lógica para Cliente Existente
             else:
                 codigo_cliente_final = asegurar_codigo_cliente(supabase, cliente_final_id)
                 supabase.table("clientes").update({
@@ -202,7 +278,6 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                     "creado_por": cobrador_id 
                 }).eq("id", cliente_final_id).execute()
 
-            # C. Cálculos financieros y fechas
             interes_generado = float(monto) * (float(tasa) / 100)
             total_pagar = float(monto) + interes_generado
             cuota = total_pagar / dias if modalidad == "Diario" else total_pagar / (dias / 7)
@@ -210,7 +285,6 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
             fecha_hoy = datetime.now()
             fecha_vencimiento = fecha_hoy + timedelta(days=dias)
             
-            # D. Generamos el código CM de préstamo
             codigo_generado = generar_codigo_prestamo(supabase, cliente_final_id, codigo_cliente_final)
 
             datos_prestamo = {
@@ -232,23 +306,20 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
             res_prest = supabase.table("prestamos").insert(datos_prestamo).execute()
             
             if res_prest.data:
-                # 🚨 CORRECCIÓN CRÍTICA: Descontar el saldo del chofer
                 nuevo_saldo = saldo_chofer - monto
                 supabase.table("usuarios").update({"saldo_actual": nuevo_saldo}).eq("id", cobrador_id).execute()
 
-                # 👇 NOTIFICACIÓN SILENCIOSA AL ADMIN 👇
                 tipo_notificacion = "notificacion_auto_nuevo" if tipo == "nuevo" else "notificacion_auto"
-                
                 datos_aviso_admin = {
                     "cobrador_id": cobrador_id,
                     "tipo_solicitud": tipo_notificacion,
                     "id_cliente_existente": cliente_final_id,
                     "datos_nuevo_cliente": json_nuevo if tipo == "nuevo" else None,
                     "monto_solicitado": monto,
-                    "tasa_propuesta": tasa,      # 🚨 AHORA SÍ LLEVA LA TASA
-                    "plazo_dias": dias,          # 🚨 AHORA SÍ LLEVA LOS DÍAS
-                    "modalidad": modalidad,      # 🚨 AHORA SÍ LLEVA LA MODALIDAD
-                    "estado": "pendiente",       # 🚨 VUELVE A "PENDIENTE" PARA QUE LE SALGA AL ADMIN
+                    "tasa_propuesta": tasa,
+                    "plazo_dias": dias,
+                    "modalidad": modalidad,
+                    "estado": "pendiente",
                     "fecha_solicitud": datetime.now().isoformat()
                 }
                 try:
@@ -257,9 +328,10 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                     pass
 
                 try:
+                    etiqueta_tipo = "(NUEVO)" if tipo == "nuevo" else "(EXISTENTE)"
                     mensaje = (
                         f"⚡ *PRÉSTAMO AUTO-APROBADO (Ruta Verde)*\n"
-                        f"👤 *Cliente:* {nombre_cliente}\n"
+                        f"👤 *Cliente:* {nombre_real_cliente} {etiqueta_tipo}\n"
                         f"💰 *Monto:* C$ {monto:,.2f}\n"
                         f"🚛 *Chofer:* {nombre_chofer}\n"
                         f"🔑 *Código:* {codigo_generado}\n"
@@ -270,7 +342,7 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                 except Exception as e:
                     print("Error Telegram auto-aprobación:", e)
                     
-                return True
+                return {"auto_aprobado": True, "nombre_cliente": nombre_real_cliente, "monto": monto, "tipo": "NUEVO" if tipo == "nuevo" else "EXISTENTE"}
             return False
 
         # =======================================================
@@ -294,20 +366,17 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
             
             if response.data:
                 try:
-                    if tipo == "nuevo" and json_nuevo:
-                        nombre_cliente = json_nuevo.get('nombre', 'Nuevo Cliente')
-                    else:
-                        nombre_cliente = f"Cliente Existente (ID: {id_existente})"
-
+                    etiqueta_tipo = "(NUEVO)" if tipo == "nuevo" else "(EXISTENTE)"
                     alerta_duplicado = "\n⚠️ *ALERTA:* Driver reportó posible duplicado validado.\n" if duplicado_ignorado else ""
 
                     mensaje = (
                         f"🚨 *NUEVA SOLICITUD DE CRÉDITO*\n"
                         f"{alerta_duplicado}\n"
-                        f"👤 *Cliente:* {nombre_cliente}\n"
+                        f"👤 *Cliente:* {nombre_real_cliente} {etiqueta_tipo}\n"
                         f"💰 *Monto:* C$ {monto:,.2f}\n"
                         f"🚛 *Chofer:* {nombre_chofer}\n"
-                        f"📅 *Plazo:* {dias} días ({modalidad})\n\n"
+                        f"📅 *Plazo:* {dias} días ({modalidad})\n"
+                        f"📈 *Tasa:* {tasa}%\n\n"
                         f"👇 _Ingresa a la App para aprobar_"
                     )
                     link_app = "https://crecemas.streamlit.app/" 
@@ -315,7 +384,7 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                 except Exception as e:
                     print(f"⚠️ Alerta Telegram falló pero se guardó en DB: {e}")
 
-                return True
+                return {"auto_aprobado": False, "nombre_cliente": nombre_real_cliente, "monto": monto, "tipo": "NUEVO" if tipo == "nuevo" else "EXISTENTE"}
             return False
             
     except Exception as e:
@@ -323,10 +392,19 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
         return False
 
 # ==========================================
-# 3. INTERFAZ PRINCIPAL
+# 4. INTERFAZ PRINCIPAL
 # ==========================================
 
 def mostrar_ventas():
+    if 'solicitud_exito' in st.session_state:
+        d = st.session_state['solicitud_exito']
+        mostrar_popup_solicitud_exito(
+            d['tipo'], 
+            d['nombre_cliente'], 
+            d['monto'], 
+            d['auto_aprobado']
+        )
+
     cargar_estilos_ventas()
     
     if 'alerta_duplicado_activa' not in st.session_state:
@@ -353,7 +431,8 @@ def mostrar_ventas():
         "¿A quién le vamos a prestar?",
         ["🆕 Nuevo Cliente", "👤 Cliente Existente"],
         index=idx_tipo,
-        horizontal=True
+        horizontal=True,
+        key="tipo_cliente_radio"
     )
     
     tipo_sql = "nuevo" if "Nuevo" in tipo_cliente_visual else "existente"
@@ -379,7 +458,8 @@ def mostrar_ventas():
                 "Selecciona o escribe para buscar un cliente *", 
                 options=["Seleccionar..."] + list(opciones.keys()), 
                 index=idx_combo + 1 if idx_combo > 0 else 0,
-                help="Puedes escribir el nombre o la cédula para filtrar la lista rápidamente."
+                help="Puedes escribir el nombre o la cédula para filtrar la lista rápidamente.",
+                key="cliente_existente_selectbox"
             )
             
             if seleccion != "Seleccionar...":
@@ -397,28 +477,37 @@ def mostrar_ventas():
             val_contacto_emergencia = datos_recuperados.get('contacto_emergencia', '') 
             val_tel_emergencia = datos_recuperados.get('telefono_emergencia', '') 
 
+            # Inicializamos variables en session_state ANTES de los inputs
+            if "input_nombre" not in st.session_state: st.session_state.input_nombre = val_nom
+            if "input_cedula" not in st.session_state: st.session_state.input_cedula = val_ced
+            if "input_telefono" not in st.session_state: st.session_state.input_telefono = val_tel
+            if "input_direccion" not in st.session_state: st.session_state.input_direccion = val_dir
+            if "input_contacto_emerg" not in st.session_state: st.session_state.input_contacto_emerg = val_contacto_emergencia
+            if "input_tel_emerg" not in st.session_state: st.session_state.input_tel_emerg = val_tel_emergencia
+            if "input_referencias" not in st.session_state: st.session_state.input_referencias = val_ref
+
             col_a, col_b = st.columns(2)
             with col_a:
-                nombre_input = st.text_input("Nombre Completo *", value=val_nom, placeholder="Ej: Juan Pérez")
+                nombre_input = st.text_input("Nombre Completo *", placeholder="Ej: Juan Pérez", key="input_nombre")
                 nombre = nombre_input.strip().upper() if nombre_input else ""
-                cedula = st.text_input("Cédula *", value=val_ced, placeholder="Ej: 001-000000-0000A").strip()
+                cedula = st.text_input("Cédula *", placeholder="Ej: 001-000000-0000A", key="input_cedula").strip()
                 
             with col_b:
-                tel = st.text_input("Teléfono *", value=val_tel, placeholder="Ej: 8888-8888").strip()
-                dire = st.text_input("Dirección Domiciliar *", value=val_dir, placeholder="Dirección exacta...")
+                tel = st.text_input("Teléfono *", placeholder="Ej: 8888-8888", key="input_telefono").strip()
+                dire = st.text_input("Dirección Domiciliar *", placeholder="Dirección exacta...", key="input_direccion")
             
             st.markdown("**Contacto de Emergencia**")
             col_c, col_d = st.columns(2)
             with col_c:
-                contacto_emergencia = st.text_input("Nombre de Emergencia", value=val_contacto_emergencia, placeholder="Ej: María López (Madre)")
+                contacto_emergencia = st.text_input("Nombre de Emergencia", placeholder="Ej: María López (Madre)", key="input_contacto_emerg")
             with col_d:
-                telefono_emergencia = st.text_input("Teléfono de Emergencia", value=val_tel_emergencia, placeholder="Ej: 8888-9999")
+                telefono_emergencia = st.text_input("Teléfono de Emergencia", placeholder="Ej: 8888-9999", key="input_tel_emerg")
 
             st.write("")
-            refs = st.text_area("Referencias Personales", value=val_ref, height=80, placeholder="Opcional: Nombre de tienda, vecino, etc.")
+            refs = st.text_area("Referencias Personales", height=80, placeholder="Opcional: Nombre de tienda, vecino, etc.", key="input_referencias")
             
             st.markdown("**Evidencia Fotográfica**")
-            foto_doc = st.file_uploader("Subir foto de documento o negocio", type=['png', 'jpg', 'jpeg'])
+            foto_doc = st.file_uploader("Subir foto de documento o negocio", type=['png', 'jpg', 'jpeg'], key="input_foto")
             
             datos_json_nuevo = {
                 "nombre": nombre, "cedula": cedula, "telefono": tel,
@@ -437,25 +526,29 @@ def mostrar_ventas():
     rec_mod = datos_recuperados.get('modalidad', 'Diario')
 
     val_inicial_monto = max(100.0, raw_monto) 
-    val_inicial_tasa = max(15, min(raw_tasa, 20))
+    val_inicial_tasa = max(15, min(raw_tasa, 30))
+    val_inicial_dias = max(5, min(rec_dias, 60))
+
+    # Inicializamos números en session_state ANTES de los inputs
+    if "input_monto" not in st.session_state: st.session_state.input_monto = val_inicial_monto
+    if "input_tasa" not in st.session_state: st.session_state.input_tasa = val_inicial_tasa
+    if "input_plazo" not in st.session_state: st.session_state.input_plazo = val_inicial_dias
 
     with st.container(border=True):
         col_monto, col_tasa = st.columns([0.6, 0.4])
         with col_monto:
-            monto = st.number_input("Monto a Prestar (C$) *", min_value=100.0, step=100.0, value=val_inicial_monto)
+            monto = st.number_input("Monto a Prestar (C$) *", min_value=100.0, step=100.0, key="input_monto")
         with col_tasa:
-            tasa = st.slider("Tasa de Interés (%)", min_value=15, max_value=20, value=val_inicial_tasa)
+            tasa = st.slider("Tasa de Interés (%)", min_value=15, max_value=30, key="input_tasa")
 
         c_dias, c_freq = st.columns(2)
         with c_dias:
-            lista_dias = [28, 29, 30, 31]
-            idx_dias = lista_dias.index(rec_dias) if rec_dias in lista_dias else 1
-            dias = st.selectbox("Plazo (Días)", lista_dias, index=idx_dias)
+            dias = st.number_input("Plazo (Días)", min_value=5, max_value=60, step=1, key="input_plazo")
         
         with c_freq:
-            lista_mod = ["Diario", "Semanal"]
+            lista_mod = ["Diario"]
             idx_mod = lista_mod.index(rec_mod) if rec_mod in lista_mod else 0
-            modalidad = st.selectbox("Modalidad de Cobro", lista_mod, index=idx_mod)
+            modalidad = st.selectbox("Modalidad de Cobro", lista_mod, index=idx_mod, key="input_modalidad")
 
         interes_generado = monto * (tasa / 100)
         total_pagar = monto + interes_generado
@@ -491,16 +584,14 @@ def mostrar_ventas():
                 st.rerun()
                 
             if col_d2.button("⚠️ SÍ, CREAR DE TODAS FORMAS", type="primary", use_container_width=True):
-                exito = guardar_solicitud_sql(
+                exito_datos = guardar_solicitud_sql(
                     tipo_sql, id_cliente_existente, datos_json_nuevo, 
                     monto, tasa, dias, modalidad, duplicado_ignorado=True
                 )
-                if exito:
+                if exito_datos:
                     st.session_state['alerta_duplicado_activa'] = False
                     if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
-                    st.balloons()
-                    st.success("✅ Solicitud forzada creada correctamente.")
-                    time.sleep(2)
+                    st.session_state['solicitud_exito'] = exito_datos
                     st.rerun()
 
     else:
@@ -520,7 +611,7 @@ def mostrar_ventas():
 
                 if error_msg:
                     for e in error_msg: st.error(f"⚠️ {e}")
-                    return
+                    return 
 
                 coincidencias = buscar_coincidencias(
                     datos_json_nuevo['nombre'], 
@@ -539,14 +630,12 @@ def mostrar_ventas():
                     st.error("⚠️ Debes seleccionar un cliente de la lista.")
                     return
 
-            exito = guardar_solicitud_sql(
+            exito_datos = guardar_solicitud_sql(
                 tipo_sql, id_cliente_existente, datos_json_nuevo, 
                 monto, tasa, dias, modalidad
             )
             
-            if exito:
+            if exito_datos:
                 if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
-                st.balloons()
-                st.success("✅ Solicitud enviada correctamente.")
-                time.sleep(2) 
+                st.session_state['solicitud_exito'] = exito_datos
                 st.rerun()
