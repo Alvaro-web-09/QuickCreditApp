@@ -308,13 +308,127 @@ def mostrar_crm_clientes():
             st.markdown("#### Detalle de Préstamos")
             if p_sel:
                 df_p = pd.DataFrame(p_sel)
-                # NUEVO: Añadimos 'codigo_prestamo' a las columnas que se muestran
                 cols_p = [c for c in ['codigo_prestamo', 'fecha_inicio', 'monto_prestado', 'saldo_pendiente', 'estado', 'plazo_dias'] if c in df_p.columns]
                 st.dataframe(df_p[cols_p], use_container_width=True, hide_index=True, column_config={
-                    "codigo_prestamo": "Código", # Renombramos la columna visualmente
+                    "codigo_prestamo": "Código", 
                     "monto_prestado": st.column_config.NumberColumn("Monto", format="C$ %.2f"),
                     "saldo_pendiente": st.column_config.NumberColumn("Saldo", format="C$ %.2f")
                 })
+
+                # 👇 NUEVA SECCIÓN: REESTRUCTURAR PRÉSTAMO Y GUARDAR HISTORIAL 👇
+                prestamos_activos = [p for p in p_sel if str(p['estado']).lower() == 'activo']
+                
+                if prestamos_activos:
+                    st.divider()
+                    st.markdown("#### ⚙️ Reestructurar Préstamo Activo")
+                    st.info("Modifica los valores a continuación. El sistema te mostrará una proyección en tiempo real antes de guardar.")
+                    
+                    opciones_prestamos = {p['id']: f"{p.get('codigo_prestamo', p['id'])} - C$ {float(p.get('monto_prestado', 0)):,.2f} (Saldo: C$ {float(p.get('saldo_pendiente', 0)):,.2f})" for p in prestamos_activos}
+                    prestamo_a_editar_id = st.selectbox("Seleccione el préstamo a modificar:", options=list(opciones_prestamos.keys()), format_func=lambda x: opciones_prestamos[x])
+                    
+                    if prestamo_a_editar_id:
+                        p_edit = next(p for p in prestamos_activos if p['id'] == prestamo_a_editar_id)
+                        
+                        # Valores históricos para comparar
+                        monto_viejo = float(p_edit.get('monto_prestado', 0))
+                        tasa_vieja = float(p_edit.get('tasa_interes', 0))
+                        plazo_viejo = int(p_edit.get('plazo_dias', 1))
+                        
+                        deuda_original_vieja = float(p_edit.get('monto_total_deuda', 0))
+                        saldo_pendiente_viejo = float(p_edit.get('saldo_pendiente', 0))
+                        cuota_vieja = float(p_edit.get('monto_cuota', 0))
+                        pagado_historico = deuda_original_vieja - saldo_pendiente_viejo
+                        
+                        # 1. ENTRADA DE DATOS (Sin st.form para permitir tiempo real)
+                        c_edit1, c_edit2, c_edit3 = st.columns(3)
+                        nuevo_monto = c_edit1.number_input("Nuevo Monto Base", value=monto_viejo, step=100.0)
+                        nueva_tasa = c_edit2.number_input("Nueva Tasa %", value=tasa_vieja, step=1.0)
+                        nuevo_plazo = c_edit3.number_input("Nuevo Plazo (Días)", value=plazo_viejo, step=1)
+                        
+                        # 2. CÁLCULO EN TIEMPO REAL PARA LA VISTA PREVIA
+                        tasa_decimal = nueva_tasa / 100.0
+                        nuevo_total_deuda = nuevo_monto * (1 + tasa_decimal)
+                        
+                        modalidad = p_edit.get('modalidad', 'Diario')
+                        if modalidad == 'Semanal':
+                            divisor = nuevo_plazo / 7.0 if (nuevo_plazo / 7.0) > 0 else 1.0
+                            nueva_cuota = nuevo_total_deuda / divisor
+                        else: # Diario
+                            nueva_cuota = nuevo_total_deuda / nuevo_plazo if nuevo_plazo > 0 else nuevo_total_deuda
+                        
+                        nuevo_saldo_pendiente = nuevo_total_deuda - pagado_historico
+                        
+                        # Evitar saldos negativos visuales en la proyección
+                        saldo_proyectado_mostrar = nuevo_saldo_pendiente if nuevo_saldo_pendiente > 0 else 0.0
+                        
+                        # 3. INTERFAZ DE PROYECCIÓN (Visual)
+                        st.markdown("##### 📊 Proyección de Reestructuración")
+                        st.caption(f"ℹ️ El cliente ya ha pagado **C$ {pagado_historico:,.2f}**. Este abono histórico se restará automáticamente del nuevo total.")
+                        
+                        p1, p2, p3 = st.columns(3)
+                        p1.metric("Nueva Deuda Total", f"C$ {nuevo_total_deuda:,.2f}", f"{nuevo_total_deuda - deuda_original_vieja:+,.2f} vs anterior")
+                        p2.metric("Nuevo Saldo Pendiente", f"C$ {saldo_proyectado_mostrar:,.2f}", f"{saldo_proyectado_mostrar - saldo_pendiente_viejo:+,.2f} vs anterior")
+                        p3.metric("Nueva Cuota", f"C$ {nueva_cuota:,.2f}", f"{nueva_cuota - cuota_vieja:+,.2f} vs anterior")
+                        
+                        # --- MODAL DE CONFIRMACIÓN ---
+                        @st.dialog("⚠️ Confirmar Reestructuración")
+                        def modal_confirmacion(p_id, n_monto, n_tasa, n_plazo, n_deuda, n_saldo, n_cuota, pagado):
+                            st.write(f"Estás a punto de reestructurar el préstamo **{p_edit.get('codigo_prestamo', 'Sin Código')}**.")
+                            st.write("Resumen de los nuevos valores:")
+                            st.markdown(f"- **Nuevo Saldo Pendiente:** C$ {n_saldo:,.2f}")
+                            st.markdown(f"- **Nueva Cuota:** C$ {n_cuota:,.2f}")
+                            st.markdown(f"- **Capital Respetado (Ya pagado):** C$ {pagado:,.2f}")
+                            st.write("¿Estás seguro de que deseas aplicar estos cambios? Esta acción es irreversible.")
+                            
+                            c1, c2 = st.columns(2)
+                            if c1.button("Cancelar", use_container_width=True):
+                                st.rerun()
+                                
+                            if c2.button("Sí, Confirmar", type="primary", use_container_width=True):
+                                try:
+                                    saldo_final = n_saldo if n_saldo > 0 else 0.0
+                                    estado_nuevo = "pagado" if saldo_final <= 0 else "activo"
+                                        
+                                    # Actualizar Préstamo en Supabase
+                                    supabase.table("prestamos").update({
+                                        "monto_prestado": n_monto,
+                                        "tasa_interes": n_tasa,
+                                        "plazo_dias": n_plazo,
+                                        "monto_total_deuda": n_deuda,
+                                        "saldo_pendiente": saldo_final,
+                                        "monto_cuota": n_cuota,
+                                        "estado": estado_nuevo
+                                    }).eq("id", p_id).execute()
+                                    
+                                    # REGISTRO AUTOMÁTICO EN NOTAS
+                                    fecha_str = datetime.now().strftime("%d/%m/%Y %I:%M %p")
+                                    cod_p = p_edit.get('codigo_prestamo', 'Sin Código')
+                                    nota_auditoria = (
+                                        f"**🤖 {fecha_str} | REESTRUCTURACIÓN DE SISTEMA**\n"
+                                        f"> Se modificó el préstamo {cod_p}:\n"
+                                        f"> • Monto: C$ {monto_viejo:,.2f} ➡️ C$ {n_monto:,.2f}\n"
+                                        f"> • Tasa: {tasa_vieja}% ➡️ {n_tasa}%\n"
+                                        f"> • Plazo: {plazo_viejo} días ➡️ {n_plazo} días\n"
+                                        f"> • Nuevo Saldo Calculado: C$ {saldo_final:,.2f}\n"
+                                        f"> Capital ya pagado respetado: C$ {pagado:,.2f}.\n\n---\n\n"
+                                    )
+                                    
+                                    notas_actuales = c_sel.get('notas_admin', '') or ""
+                                    notas_actualizadas = nota_auditoria + notas_actuales
+                                    supabase.table("clientes").update({"notas_admin": notas_actualizadas}).eq("id", id_sel).execute()
+                                    
+                                    st.success("¡Préstamo reestructurado con éxito! Recargando...")
+                                    time.sleep(2)
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"Error al actualizar: {e}")
+
+                        # 4. BOTÓN DE INICIO
+                        st.warning("Revisa la proyección arriba antes de confirmar. Esta acción modificará la base de datos.")
+                        if st.button("Aplicar Reestructuración", type="primary", use_container_width=True):
+                             modal_confirmacion(prestamo_a_editar_id, nuevo_monto, nueva_tasa, nuevo_plazo, nuevo_total_deuda, nuevo_saldo_pendiente, nueva_cuota, pagado_historico)
+
             else:
                 st.info("Sin historial.")
 

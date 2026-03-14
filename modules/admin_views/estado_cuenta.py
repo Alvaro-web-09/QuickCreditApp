@@ -135,7 +135,9 @@ def generar_pdf_estado_cuenta(cliente_info, prestamo_info, cobrador_asignado, df
 
     # 4. TOTALES 
     data_totales = [
-        ["Monto Original:", f"C$ {prestamo_info['monto_prestado']:,.2f}"],
+        ["Capital Prestado:", f"C$ {prestamo_info['monto_prestado']:,.2f}"],
+        ["Intereses:", f"C$ {resumen_totales.get('interes', 0):,.2f}"],
+        ["Total a Pagar:", f"C$ {resumen_totales.get('total_deuda', 0):,.2f}"],
         ["Total Abonado:", f"C$ {resumen_totales['pagado']:,.2f}"],
         ["Saldo Pendiente:", f"C$ {resumen_totales['saldo']:,.2f}"]
     ]
@@ -264,13 +266,23 @@ def mostrar_estado_cuenta():
 
     # Cálculos Financieros
     total_pagado = sum([p['monto'] for p in pagos])
-    saldo_actual = prestamo_sel['monto_prestado'] - total_pagado
-    if 'saldo_pendiente' in prestamo_sel:
-        saldo_actual = prestamo_sel['saldo_pendiente']
+    
+    # 1. Obtenemos el Saldo Pendiente real (deuda restante)
+    saldo_actual = prestamo_sel.get('saldo_pendiente', prestamo_sel['monto_prestado'] - total_pagado)
 
+    # 2. Desglose del Préstamo
+    capital_prestado = prestamo_sel['monto_prestado']
+    
+    # La deuda original completa (Total a Pagar) es lo que ya pagó + lo que aún debe
+    total_deuda = total_pagado + saldo_actual 
+    
+    # El interés es la diferencia entre la deuda total y el dinero entregado
+    intereses_totales = max(0, total_deuda - capital_prestado)
+
+    # Progreso basado en la Deuda Total
     porcentaje_pagado = 0.0
-    if prestamo_sel['monto_prestado'] > 0:
-        porcentaje_pagado = min(total_pagado / prestamo_sel['monto_prestado'], 1.0)
+    if total_deuda > 0:
+        porcentaje_pagado = min(total_pagado / total_deuda, 1.0)
 
     # --- NUEVO: ALERTA DE MORA / ESTADO ---
     if prestamo_sel['estado'] == 'pagado':
@@ -289,19 +301,25 @@ def mostrar_estado_cuenta():
         else:
             st.info("No se han registrado pagos para este crédito aún.")
 
-    # --- UI: TARJETAS KPI (AHORA CON BARRA DE PROGRESO) ---
+    # --- UI: TARJETAS KPI (DESGLOSE COMPLETO) ---
     with st.container(border=True):
-        k1, k2, k3, k4 = st.columns(4)
+        # Usamos 6 columnas para contar toda la historia financiera
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        
         with k1:
-            st.metric("Monto Crédito", f"C$ {prestamo_sel['monto_prestado']:,.0f}")
+            st.metric("Capital Prestado", f"C$ {capital_prestado:,.0f}", help="Dinero entregado al cliente")
         with k2:
-            st.metric("Total Pagado", f"C$ {total_pagado:,.0f}", delta="Recuperado")
+            st.metric("Intereses", f"C$ {intereses_totales:,.0f}", help="Ganancia por el préstamo")
         with k3:
-            st.metric("Saldo Pendiente", f"C$ {saldo_actual:,.0f}", delta="Por cobrar", delta_color="inverse")
+            st.metric("Total a Pagar", f"C$ {total_deuda:,.0f}", help="Capital + Intereses")
         with k4:
+            st.metric("Total Abonado", f"C$ {total_pagado:,.0f}", delta="Recuperado")
+        with k5:
+            st.metric("Saldo Pendiente", f"C$ {saldo_actual:,.0f}", delta="Por cobrar", delta_color="inverse")
+        with k6:
             st.metric("Estado", prestamo_sel['estado'].upper())
         
-        # Barra de progreso debajo de los KPIs
+        # Barra de progreso
         st.progress(porcentaje_pagado, text=f"Progreso del Crédito: {int(porcentaje_pagado * 100)}%")
 
     st.write("")
@@ -423,7 +441,7 @@ def mostrar_estado_cuenta():
                     }
                 )
 
-        # --- BOTÓN DESCARGA (Intacto) ---
+        # --- BOTÓN DESCARGA ---
         st.write("---")
         c_descarga, _ = st.columns([1, 2])
         with c_descarga:
@@ -436,7 +454,8 @@ def mostrar_estado_cuenta():
                 prestamo_sel,
                 nombre_cobrador,
                 df[['Fecha', 'Tipo', 'Cobrador', 'Monto']] if not df.empty else pd.DataFrame(columns=['Fecha', 'Tipo', 'Cobrador', 'Monto']),
-                {'pagado': total_pagado, 'saldo': saldo_actual}
+                # 👇 AQUÍ ES DONDE AGREGAMOS LOS NUEVOS DATOS 👇
+                {'pagado': total_pagado, 'saldo': saldo_actual, 'interes': intereses_totales, 'total_deuda': total_deuda}
             )
             
             cod_file = prestamo_sel.get('codigo_prestamo', prestamo_sel['fecha_inicio'])
