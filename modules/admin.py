@@ -10,7 +10,8 @@ from modules.admin_views import (
     estado_cuenta,
     balance_financiero,
     admin_caja,
-    detalle_prestamos
+    detalle_prestamos,
+    cobros_extraordinarios  # <--- NUEVA IMPORTACIÓN AQUÍ
 )
 
 def main():
@@ -56,23 +57,23 @@ def main():
         st.write(f"Hola, **{usuario}**")
         st.markdown("---")
         
-        # 2. AGREGAMOS LA OPCIÓN AL MENÚ CON LOS NUEVOS NOMBRES
+        # 2. AGREGAMOS LA OPCIÓN AL MENÚ
         menu = st.radio(
             "Navegación",
             [
                 "📊 Dashboard Global", 
-                "🏦 Fondos",                  # Antes: Bóveda / Fondos
+                "🏦 Fondos",                  
+                "💸 Pagos Extraordinarios",   # <--- NUEVO BOTÓN AGREGADO
                 "📩 Solicitudes Nuevas", 
                 "📂 Explorador de Préstamos", 
                 "📈 Balance Financiero", 
                 "📜 Estado de Cuenta",   
-                "👥 Clientes",                # Antes: Clientes (CRM)
-                "💼 Vendedores",              # Antes: CRM Vendedores
-                "💰 Pago Planilla"            # Antes: Auditoría Pagos (Cambié el icono a dinero)
+                "👥 Clientes",                
+                "💼 Vendedores",              
+                "💰 Pago Planilla"            
             ],
         )
         
-        # (El botón de cerrar sesión fue eliminado de aquí. Ahora solo lo controlará app.py)
         st.markdown("---")
 
     # --- ENRUTAMIENTO (ACTUALIZADO PARA COINCIDIR CON LOS NOMBRES) ---
@@ -80,8 +81,11 @@ def main():
     if menu == "📊 Dashboard Global":
         dashboard.mostrar_dashboard()
 
-    elif menu == "🏦 Fondos":              # <--- Actualizado
+    elif menu == "🏦 Fondos":              
         admin_caja.mostrar_gestion_caja()
+        
+    elif menu == "💸 Pagos Extraordinarios": # <--- NUEVA RUTA AGREGADA
+        cobros_extraordinarios.mostrar_modulo_cobros_admin()
         
     elif menu == "📩 Solicitudes Nuevas":
         solicitudes.mostrar_solicitudes()
@@ -95,13 +99,13 @@ def main():
     elif menu == "📜 Estado de Cuenta":
         estado_cuenta.mostrar_estado_cuenta()
 
-    elif menu == "👥 Clientes":            # <--- Actualizado
+    elif menu == "👥 Clientes":            
         crm_clientes.mostrar_crm_clientes()
 
-    elif menu == "💼 Vendedores":          # <--- Actualizado
+    elif menu == "💼 Vendedores":          
         crm_vendedores.mostrar_crm_vendedores()
         
-    elif menu == "💰 Pago Planilla":       # <--- Actualizado
+    elif menu == "💰 Pago Planilla":       
         auditoria.mostrar_auditoria()
 
 if __name__ == "__main__":

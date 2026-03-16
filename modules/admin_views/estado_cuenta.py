@@ -303,8 +303,9 @@ def mostrar_estado_cuenta():
 
     # --- UI: TARJETAS KPI (DESGLOSE COMPLETO) ---
     with st.container(border=True):
-        # Usamos 6 columnas para contar toda la historia financiera
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        # SOLUCIÓN: Usamos 2 filas de 3 columnas en lugar de 1 fila de 6.
+        # Fila 1
+        k1, k2, k3 = st.columns(3)
         
         with k1:
             st.metric("Capital Prestado", f"C$ {capital_prestado:,.0f}", help="Dinero entregado al cliente")
@@ -312,6 +313,11 @@ def mostrar_estado_cuenta():
             st.metric("Intereses", f"C$ {intereses_totales:,.0f}", help="Ganancia por el préstamo")
         with k3:
             st.metric("Total a Pagar", f"C$ {total_deuda:,.0f}", help="Capital + Intereses")
+            
+        st.write("") # Espacio visual entre las filas
+        
+        # Fila 2
+        k4, k5, k6 = st.columns(3)
         with k4:
             st.metric("Total Abonado", f"C$ {total_pagado:,.0f}", delta="Recuperado")
         with k5:
@@ -319,6 +325,7 @@ def mostrar_estado_cuenta():
         with k6:
             st.metric("Estado", prestamo_sel['estado'].upper())
         
+        st.write("") # Espacio visual antes de la barra
         # Barra de progreso
         st.progress(porcentaje_pagado, text=f"Progreso del Crédito: {int(porcentaje_pagado * 100)}%")
 
