@@ -45,7 +45,7 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, driver_nombre):
         <div style="background: #FAFAFA; padding: 15px; border-radius: 12px; text-align: left; border: 1px solid #eee;">
             <p style="margin: 0; color: #888; font-size: 14px;">Cliente: <span style="color: #0F3D3E; font-weight: 600; float: right;">{cliente_nombre}</span></p>
             <hr style="margin: 10px 0; border: 0; border-top: 1px solid #eee;">
-            <p style="margin: 0; color: #888; font-size: 14px;">Nuevo Saldo: <span style="color: #D32F2F; font-weight: 700; float: right;">C$ {nuevo_saldo:,.2f}</span></p>
+            <p style="margin: 0; color: #888; font-size: 14px;">Nuevo Saldo Real: <span style="color: #D32F2F; font-weight: 700; float: right;">C$ {nuevo_saldo:,.2f}</span></p>
         </div>
         <p style="font-size: 12px; color: #999; margin-top: 15px;">Sumado a la caja de: <b>{driver_nombre}</b></p>
     </div>
@@ -55,9 +55,9 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, driver_nombre):
         st.rerun()
 
 # ==========================================
-# 3. LÓGICA DE PROCESAMIENTO (SIN TELEGRAM)
+# 3. LÓGICA DE PROCESAMIENTO (MODIFICADA)
 # ==========================================
-def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nombre_driver, fecha_pago):
+def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nombre_driver, fecha_pago, saldo_actual_real):
     supabase = get_db_client()
     cliente = prestamo['clientes']
     
@@ -65,10 +65,10 @@ def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nomb
     fecha_pago_str = fecha_pago.strftime("%Y-%m-%d")
     
     try:
-        # Calculamos el saldo para mostrarlo en el UI (el trigger se encarga de la DB)
-        nuevo_saldo = prestamo['saldo_pendiente'] - monto
+        # Calculamos el saldo real restante
+        nuevo_saldo = saldo_actual_real - monto
 
-        # 1. Insertar pago (El Trigger hará el descuento y sumará el dinero al driver)
+        # 1. Insertar pago
         datos_pago = {
             "prestamo_id": prestamo['id'],
             "cliente_id": cliente['id'],
@@ -86,7 +86,6 @@ def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nomb
             "fecha": fecha_pago_str, 
             "estado_visita": "Pagado"
         }
-        # Revisamos si ya había una visita ese día para actualizarla, sino, la creamos
         check = supabase.table("bitacora_visitas").select("id").eq("cliente_id", cliente['id']).eq("fecha", fecha_pago_str).execute()
         if check.data:
             supabase.table("bitacora_visitas").update(visita_data).eq("id", check.data[0]['id']).execute()
@@ -121,14 +120,28 @@ def mostrar_dashboard_cobro_admin(prestamo, admin_id, id_driver, nombre_driver):
     
     col_izq, col_der = st.columns([1.2, 1], gap="large")
     
+    # --- CÁLCULO DE SALDO REAL BASADO EN PAGOS ---
+    # Consultamos todos los pagos de este préstamo
+    r_pagos = supabase.table("pagos").select("monto, fecha_pago, fecha_hora").eq("prestamo_id", prestamo['id']).order("fecha_hora", desc=True).execute()
+    todos_los_pagos = r_pagos.data if r_pagos.data else []
+    
+    total_pagado = sum([p['monto'] for p in todos_los_pagos])
+    monto_total_deuda = prestamo.get('monto_total_deuda', 0)
+    
+    if monto_total_deuda > 0:
+        saldo_real = monto_total_deuda - total_pagado
+    else:
+        # Fallback en caso de que la deuda total no esté bien registrada
+        saldo_real = prestamo.get('saldo_pendiente', 0)
+    
     # --- COLUMNA IZQUIERDA: FORMULARIO DE COBRO ---
     with col_izq:
         st.markdown('<div class="method-badge">🛠️ MODO ADMIN: COBRO EXTRAORDINARIO</div>', unsafe_allow_html=True)
         
         st.markdown(f"""
             <div class="payment-summary">
-                <div class="summary-label">Saldo Pendiente</div>
-                <div class="big-money">C$ {prestamo['saldo_pendiente']:,.2f}</div>
+                <div class="summary-label">Saldo Real Pendiente</div>
+                <div class="big-money">C$ {saldo_real:,.2f}</div>
                 <div class="cuota-pill">Cuota Sugerida: C$ {prestamo['monto_cuota']:,.2f}</div>
             </div>
         """, unsafe_allow_html=True)
@@ -141,7 +154,7 @@ def mostrar_dashboard_cobro_admin(prestamo, admin_id, id_driver, nombre_driver):
         st.info(f"💡 El dinero se sumará a la caja del driver: **{nombre_driver}**")
         
         if st.button("✅ FORZAR REGISTRO DE PAGO", type="primary", use_container_width=True):
-            procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver, nombre_driver, fecha_pago)
+            procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver, nombre_driver, fecha_pago, saldo_real)
 
     # --- COLUMNA DERECHA: DETALLES E HISTORIAL ---
     with col_der:
@@ -149,21 +162,21 @@ def mostrar_dashboard_cobro_admin(prestamo, admin_id, id_driver, nombre_driver):
         <div class="metric-card card-blue">
             <div class="card-header-title">Detalles del Préstamo</div>
             <div class="info-row"><span class="info-label">Cód. Préstamo</span><span class="info-value">{prestamo.get('codigo_prestamo', 'N/A')}</span></div>
-            <div class="info-row"><span class="info-label">Monto Aprobado</span><span class="info-value">C$ {prestamo.get('monto_total_deuda', 0):,.2f}</span></div>
+            <div class="info-row"><span class="info-label">Deuda Original</span><span class="info-value">C$ {monto_total_deuda:,.2f}</span></div>
+            <div class="info-row"><span class="info-label">Total Abonado</span><span class="info-value">C$ {total_pagado:,.2f}</span></div>
             <div class="info-row"><span class="info-label">Fecha Inicio</span><span class="info-value">{prestamo.get('fecha_inicio', 'N/A')}</span></div>
-            <div class="info-row"><span class="info-label">Vencimiento</span><span class="info-value">{prestamo.get('fecha_vencimiento', 'N/A')}</span></div>
         </div>
         """, unsafe_allow_html=True)
 
         st.markdown("#### Últimos 10 Pagos Registrados")
         
-        # Consultar últimos pagos de este préstamo
-        r_pagos = supabase.table("pagos").select("monto, fecha_pago, fecha_hora").eq("prestamo_id", prestamo['id']).order("fecha_hora", desc=True).limit(10).execute()
-        
-        if r_pagos.data:
-            df_pagos = pd.DataFrame(r_pagos.data)
-            df_pagos['fecha_pago'] = pd.to_datetime(df_pagos['fecha_pago']).dt.strftime('%d/%m/%Y')
-            df_pagos.rename(columns={'fecha_pago': 'Fecha', 'monto': 'Abono (C$)'}, inplace=True)
+        ultimos_10 = todos_los_pagos[:10]
+        if ultimos_10:
+            df_pagos = pd.DataFrame(ultimos_10)
+            # Manejo de la fecha dependiendo de cuál campo esté lleno
+            df_pagos['Fecha_Real'] = df_pagos['fecha_pago'].fillna(df_pagos['fecha_hora'])
+            df_pagos['Fecha_Real'] = pd.to_datetime(df_pagos['Fecha_Real']).dt.strftime('%d/%m/%Y')
+            df_pagos.rename(columns={'Fecha_Real': 'Fecha', 'monto': 'Abono (C$)'}, inplace=True)
             st.dataframe(df_pagos[['Fecha', 'Abono (C$)']], hide_index=True, use_container_width=True)
         else:
             st.markdown('<div class="empty-state">No hay pagos previos registrados.</div>', unsafe_allow_html=True)
@@ -192,7 +205,6 @@ def mostrar_modulo_cobros_admin():
     st.title("💸 Pagos Extraordinarios")
     st.write("Registra pagos atrasados o extraordinarios asignándolos a la caja de un driver específico.")
 
-    # 1. Obtener lista SOLO de Drivers (Filtrado corregido)
     r_drivers = supabase.table("usuarios").select("id, nombre_completo, username").eq("rol", "driver").execute()
     lista_drivers = r_drivers.data if r_drivers.data else []
     
@@ -210,34 +222,50 @@ def mostrar_modulo_cobros_admin():
         driver_id = opciones_drivers[driver_seleccionado_nombre]
 
     with col2:
-        # Hacemos que el buscador sea opcional visualmente
         busqueda = st.text_input("2️⃣ Buscar Cliente (Opcional):", placeholder="Filtrar por nombre...")
 
-    # 2. Buscar préstamos activos de ESE driver (Se ejecuta siempre, no solo al buscar)
     try:
         r_prestamos = supabase.table("prestamos").select("*, clientes(*)").eq("cobrador_id", driver_id).eq("estado", "activo").execute()
         prestamos = r_prestamos.data or []
         
-        # Filtrar resultados si el admin escribió algo
         if busqueda:
             term = busqueda.lower()
             resultados = [p for p in prestamos if p['clientes'] and term in p['clientes']['nombre'].lower()]
         else:
-            # Si no hay búsqueda, mostramos todos los que tienen cliente asignado
             resultados = [p for p in prestamos if p['clientes']]
         
         if resultados:
             st.write("") 
             st.markdown(f"**Préstamos activos asignados a {driver_seleccionado_nombre} ({len(resultados)}):**")
             
+            # --- CÁLCULO DE SALDO REAL MASIVO ---
+            # Para no hacer una consulta por cada préstamo, jalamos todos los pagos de un solo golpe
+            prestamo_ids = [p['id'] for p in resultados]
+            pagos_dict = {pid: 0 for pid in prestamo_ids}
+            
+            if prestamo_ids:
+                res_pagos = supabase.table("pagos").select("prestamo_id, monto").in_("prestamo_id", prestamo_ids).execute()
+                if res_pagos.data:
+                    for pg in res_pagos.data:
+                        pagos_dict[pg['prestamo_id']] += pg['monto']
+            
             for p in resultados:
                 c = p['clientes']
+                
+                total_pagado_prestamo = pagos_dict.get(p['id'], 0)
+                monto_total = p.get('monto_total_deuda', 0)
+                
+                if monto_total > 0:
+                    saldo_real_mostrar = monto_total - total_pagado_prestamo
+                else:
+                    saldo_real_mostrar = p.get('saldo_pendiente', 0)
+                
                 with st.container():
                     st.markdown(f"""
                     <div style='background: white; padding: 15px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.02);'>
                         <div>
                             <h4 style='margin:0; color:#0F3D3E; font-size: 1.1rem;'>{c['nombre']}</h4>
-                            <span style='color: #666; font-size: 0.9rem;'>Deuda: <b>C$ {p['saldo_pendiente']:,.0f}</b> | Cuota: C$ {p['monto_cuota']}</span>
+                            <span style='color: #666; font-size: 0.9rem;'>Deuda Real: <b>C$ {saldo_real_mostrar:,.0f}</b> | Cuota: C$ {p['monto_cuota']}</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)

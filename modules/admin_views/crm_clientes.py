@@ -68,7 +68,6 @@ def generar_reporte_cliente_pdf(cliente, prestamos, resumen_kpi, nombre_vendedor
     # Sección 1: Datos Personales
     story.append(Paragraph("INFORMACIÓN PERSONAL", style_subtitulo))
     
-    # NUEVO: Obtenemos el código del cliente
     codigo_cliente = cliente.get('codigo_cliente', 'Sin Asignar')
     nombre = cliente.get('nombre', 'N/A')
     cedula = cliente.get('cedula', 'N/A')
@@ -130,13 +129,12 @@ def generar_reporte_cliente_pdf(cliente, prestamos, resumen_kpi, nombre_vendedor
     # Sección 3: Tabla Histórica
     story.append(Paragraph("HISTORIAL DE CRÉDITOS", style_subtitulo))
     if prestamos:
-        # NUEVO: Agregamos CÓDIGO a los encabezados
         headers = ["CÓDIGO", "FECHA", "MONTO", "SALDO", "ESTADO", "PLAZO"]
         data_hist = [headers]
         
         for p in prestamos:
             row = [
-                p.get('codigo_prestamo', '-'), # NUEVA COLUMNA
+                p.get('codigo_prestamo', '-'),
                 p.get('fecha_inicio', '-'), 
                 f"C$ {float(p.get('monto_prestado',0)):,.2f}", 
                 f"C$ {float(p.get('saldo_pendiente',0)):,.2f}", 
@@ -145,7 +143,6 @@ def generar_reporte_cliente_pdf(cliente, prestamos, resumen_kpi, nombre_vendedor
             ]
             data_hist.append(row)
             
-        # Reajustamos los anchos de columna para que quepa el código
         t_hist = Table(data_hist, colWidths=[65, 70, 85, 85, 65, 80])
         t_hist.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), COLOR_NEGRO),
@@ -155,7 +152,7 @@ def generar_reporte_cliente_pdf(cliente, prestamos, resumen_kpi, nombre_vendedor
             ('ALIGN', (0,0), (1,-1), 'CENTER'),
             ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS_CLARO]),
             ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ('FONTSIZE', (0,0), (-1,-1), 8), # Letra un poco más pequeña para que quepa bien
+            ('FONTSIZE', (0,0), (-1,-1), 8), 
         ]))
         story.append(t_hist)
     else:
@@ -215,7 +212,6 @@ def mostrar_crm_clientes():
         col_search, col_vend, col_status = st.columns([2, 1.5, 1])
         
         with col_search: 
-            # NUEVO: Permitimos buscar por código
             busqueda = st.text_input("Buscar Cliente", placeholder="Código, Nombre o Cédula")
         
         with col_vend:
@@ -236,12 +232,11 @@ def mostrar_crm_clientes():
         creado_por_id = str(c.get('creado_por')) if c.get('creado_por') else None
         nombre_v = dict_drivers.get(creado_por_id, "Admin / Sistema")
         r_id, r_txt = clasificar_cliente(p_c)
-        codigo_c = c.get('codigo_cliente', '--') # Obtenemos el código
+        codigo_c = c.get('codigo_cliente', '--') 
 
         # Filtros
         coincide_texto = False
         if termino_busqueda:
-            # NUEVO: Añadimos el código del cliente al string de búsqueda
             texto_cliente = (str(codigo_c) + " " + str(c['nombre']) + " " + str(c.get('cedula',''))).lower()
             if termino_busqueda in texto_cliente: coincide_texto = True
         
@@ -253,20 +248,19 @@ def mostrar_crm_clientes():
         if filtro_p == "Sin Deuda" and saldo > 0: continue
 
         data_master.append({
-            "Código": codigo_c, # NUEVA COLUMNA
+            "Código": codigo_c, 
             "Nombre": c['nombre'], 
             "Cédula": c.get('cedula', 'N/A'),
             "Vendedor": nombre_v, 
             "Saldo": saldo, 
             "Clasificación": r_txt,
-            "ID": c['id'] # Oculto en la tabla, se usa para lógica
+            "ID": c['id'] 
         })
 
     # Tabla Principal
     if data_master:
         st.dataframe(
             pd.DataFrame(data_master), use_container_width=True, hide_index=True,
-            # NUEVO: Incluimos el Código al inicio del orden de columnas
             column_order=("Código", "Nombre", "Cédula", "Vendedor", "Saldo", "Clasificación"),
             column_config={"Saldo": st.column_config.NumberColumn(format="C$ %.2f")}
         )
@@ -278,7 +272,6 @@ def mostrar_crm_clientes():
     # --- 2. GESTIÓN INDIVIDUAL ---
     st.markdown("### Gestión de Expediente Individual")
     
-    # NUEVO: El desplegable ahora muestra el código para ubicar rápido al cliente
     opciones_select = {d['ID']: f"{d['Código']} | {d['Nombre']} | {d['Cédula']}" for d in data_master}
     id_sel = st.selectbox("Seleccionar Cliente:", options=[None] + list(opciones_select.keys()), format_func=lambda x: opciones_select.get(x, "Seleccione..."))
 
@@ -337,8 +330,19 @@ def mostrar_crm_clientes():
                         deuda_original_vieja = float(p_edit.get('monto_total_deuda', 0))
                         saldo_pendiente_viejo = float(p_edit.get('saldo_pendiente', 0))
                         cuota_vieja = float(p_edit.get('monto_cuota', 0))
-                        pagado_historico = deuda_original_vieja - saldo_pendiente_viejo
                         
+                        # --- SOLUCIÓN: CONSULTA REAL A LA TABLA DE PAGOS ---
+                        # Contamos recibo por recibo para tener el capital pagado exacto
+                        try:
+                            res_pagos = supabase.table("pagos").select("monto").eq("prestamo_id", prestamo_a_editar_id).execute()
+                            lista_pagos = res_pagos.data if res_pagos.data else []
+                            pagado_historico = sum(float(pago['monto']) for pago in lista_pagos)
+                        except Exception as e:
+                            # Fallback de seguridad en caso de que falle la conexión
+                            pagado_historico = deuda_original_vieja - saldo_pendiente_viejo 
+                            st.warning(f"Error cargando recibos. Usando aproximación matemática. ({e})")
+                        # ---------------------------------------------------
+
                         # 1. ENTRADA DE DATOS (Sin st.form para permitir tiempo real)
                         c_edit1, c_edit2, c_edit3 = st.columns(3)
                         nuevo_monto = c_edit1.number_input("Nuevo Monto Base", value=monto_viejo, step=100.0)
@@ -356,6 +360,7 @@ def mostrar_crm_clientes():
                         else: # Diario
                             nueva_cuota = nuevo_total_deuda / nuevo_plazo if nuevo_plazo > 0 else nuevo_total_deuda
                         
+                        # Calculamos el nuevo saldo usando los RECIBOS REALES pagados
                         nuevo_saldo_pendiente = nuevo_total_deuda - pagado_historico
                         
                         # Evitar saldos negativos visuales en la proyección
@@ -363,7 +368,7 @@ def mostrar_crm_clientes():
                         
                         # 3. INTERFAZ DE PROYECCIÓN (Visual)
                         st.markdown("##### 📊 Proyección de Reestructuración")
-                        st.caption(f"ℹ️ El cliente ya ha pagado **C$ {pagado_historico:,.2f}**. Este abono histórico se restará automáticamente del nuevo total.")
+                        st.caption(f"ℹ️ El cliente ya ha pagado **C$ {pagado_historico:,.2f}**. Este abono histórico real se restará automáticamente de la nueva deuda total.")
                         
                         p1, p2, p3 = st.columns(3)
                         p1.metric("Nueva Deuda Total", f"C$ {nuevo_total_deuda:,.2f}", f"{nuevo_total_deuda - deuda_original_vieja:+,.2f} vs anterior")
