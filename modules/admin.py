@@ -11,7 +11,8 @@ from modules.admin_views import (
     balance_financiero,
     admin_caja,
     detalle_prestamos,
-    cobros_extraordinarios  # <--- NUEVA IMPORTACIÓN AQUÍ
+    cobros_extraordinarios,
+    excel_master  # <--- NUEVA IMPORTACIÓN AQUÍ
 )
 
 def main():
@@ -62,8 +63,9 @@ def main():
             "Navegación",
             [
                 "📊 Dashboard Global", 
+                "🖥️ Control Excel",      # <--- NUEVO BOTÓN AGREGADO AQUÍ
                 "🏦 Fondos",                  
-                "💸 Pagos Extraordinarios",   # <--- NUEVO BOTÓN AGREGADO
+                "💸 Pagos Extraordinarios",   
                 "📩 Solicitudes Nuevas", 
                 "📂 Explorador de Préstamos", 
                 "📈 Balance Financiero", 
@@ -81,10 +83,13 @@ def main():
     if menu == "📊 Dashboard Global":
         dashboard.mostrar_dashboard()
 
+    elif menu == "🖥️ Control Excel":       # <--- NUEVA RUTA AGREGADA
+        excel_master.mostrar_modulo_excel_completo()
+
     elif menu == "🏦 Fondos":              
         admin_caja.mostrar_gestion_caja()
         
-    elif menu == "💸 Pagos Extraordinarios": # <--- NUEVA RUTA AGREGADA
+    elif menu == "💸 Pagos Extraordinarios": 
         cobros_extraordinarios.mostrar_modulo_cobros_admin()
         
     elif menu == "📩 Solicitudes Nuevas":
