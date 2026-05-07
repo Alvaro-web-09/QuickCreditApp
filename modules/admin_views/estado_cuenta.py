@@ -264,22 +264,22 @@ def mostrar_estado_cuenta():
         .gte("fecha", prestamo_sel['fecha_inicio'])\
         .execute().data
 
-    # Cálculos Financieros
-    total_pagado = sum([p['monto'] for p in pagos])
+    # --- CÁLCULOS FINANCIEROS (CONEXIÓN DIRECTA CON BASE DE DATOS) ---
     
-    # 1. Obtenemos el Saldo Pendiente real (deuda restante)
-    saldo_actual = prestamo_sel.get('saldo_pendiente', prestamo_sel['monto_prestado'] - total_pagado)
-
-    # 2. Desglose del Préstamo
-    capital_prestado = prestamo_sel['monto_prestado']
+    # 1. Valores Maestros desde la tabla 'prestamos'
+    capital_prestado = float(prestamo_sel.get('monto_prestado', 0))
+    total_deuda = float(prestamo_sel.get('monto_total_deuda', 0))
+    saldo_actual = float(prestamo_sel.get('saldo_pendiente', 0))
     
-    # La deuda original completa (Total a Pagar) es lo que ya pagó + lo que aún debe
-    total_deuda = total_pagado + saldo_actual 
-    
-    # El interés es la diferencia entre la deuda total y el dinero entregado
+    # 2. Cálculos derivados matemáticamente consistentes
+    # Los intereses son la diferencia entre lo que se pactó cobrar y lo entregado
     intereses_totales = max(0, total_deuda - capital_prestado)
-
-    # Progreso basado en la Deuda Total
+    
+    # El total abonado debe ser la diferencia entre la deuda total y lo que falta por pagar
+    # Esto garantiza que el PDF siempre cuadre, incluso si un pago no se registró bien.
+    total_pagado = max(0, total_deuda - saldo_actual)
+    
+    # 3. Progreso basado en la Deuda Total
     porcentaje_pagado = 0.0
     if total_deuda > 0:
         porcentaje_pagado = min(total_pagado / total_deuda, 1.0)

@@ -250,6 +250,20 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         }
         supabase.table("pagos").insert(datos_pago).execute()
 
+        # ========================================================
+        # 👇 NUEVO: ACTUALIZAR EL SALDO EN LA TABLA PRESTAMOS 👇
+        # ========================================================
+        nuevo_estado = "pagado" if nuevo_saldo <= 0 else "activo"
+        
+        supabase.table("prestamos").update({
+            "saldo_pendiente": nuevo_saldo,
+            "estado": nuevo_estado,
+            "fecha_ultimo_pago": hoy
+        }).eq("id", prestamo['id']).execute()
+        # ========================================================
+        # 👆 FIN DE LO NUEVO 👆
+        # ========================================================
+
         # 4. Actualizar Bitácora
         visita_data = {"cliente_id": cliente['id'], "cobrador_id": user_id, "fecha": hoy, "estado_visita": "Pagado"}
         check = supabase.table("bitacora_visitas").select("id").eq("cliente_id", cliente['id']).eq("fecha", hoy).execute()

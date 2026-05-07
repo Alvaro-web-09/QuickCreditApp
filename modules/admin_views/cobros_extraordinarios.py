@@ -55,7 +55,7 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, driver_nombre):
         st.rerun()
 
 # ==========================================
-# 3. LÓGICA DE PROCESAMIENTO (MODIFICADA)
+# 3. LÓGICA DE PROCESAMIENTO (MODIFICADA Y CORREGIDA)
 # ==========================================
 def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nombre_driver, fecha_pago, saldo_actual_real):
     supabase = get_db_client()
@@ -78,6 +78,27 @@ def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nomb
             "fecha_pago": fecha_pago_str,
         }
         supabase.table("pagos").insert(datos_pago).execute()
+
+        # --- 👇 CORRECCIÓN 1: ACTUALIZAR EL SALDO DEL PRÉSTAMO 👇 ---
+        nuevo_estado = "pagado" if nuevo_saldo <= 0 else "activo"
+        
+        supabase.table("prestamos").update({
+            "saldo_pendiente": nuevo_saldo,
+            "estado": nuevo_estado,
+            "fecha_ultimo_pago": fecha_pago_str
+        }).eq("id", prestamo['id']).execute()
+        # --- 👆 FIN CORRECCIÓN 1 👆 ---
+
+        # --- 👇 CORRECCIÓN 2: SUMAR EL DINERO A LA CAJA DEL DRIVER 👇 ---
+        resp_driver = supabase.table("usuarios").select("saldo_actual").eq("id", id_driver_destino).single().execute()
+        if resp_driver.data:
+            saldo_caja_anterior = resp_driver.data.get('saldo_actual', 0)
+            nuevo_saldo_caja = saldo_caja_anterior + monto
+            
+            supabase.table("usuarios").update({
+                "saldo_actual": nuevo_saldo_caja
+            }).eq("id", id_driver_destino).execute()
+        # --- 👆 FIN CORRECCIÓN 2 👆 ---
 
         # 2. Forzar Bitácora para la fecha seleccionada
         visita_data = {
