@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from db_connection import get_db_client
+
+# Definimos tu zona horaria local (UTC-6 para Nicaragua/Centroamérica)
+TZ_LOCAL = timezone(timedelta(hours=-6))
 
 # ==========================================
 # 1. ESTILOS HÍBRIDOS (UI LIMPIA)
@@ -61,7 +64,8 @@ def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nomb
     supabase = get_db_client()
     cliente = prestamo['clientes']
     
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Ajustado con la zona horaria local
+    ahora = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
     fecha_pago_str = fecha_pago.strftime("%Y-%m-%d")
     
     try:
@@ -84,8 +88,7 @@ def procesar_pago_admin(prestamo, monto, nota, admin_id, id_driver_destino, nomb
         
         supabase.table("prestamos").update({
             "saldo_pendiente": nuevo_saldo,
-            "estado": nuevo_estado,
-            "fecha_ultimo_pago": fecha_pago_str
+            "estado": nuevo_estado
         }).eq("id", prestamo['id']).execute()
         # --- 👆 FIN CORRECCIÓN 1 👆 ---
 
@@ -168,7 +171,8 @@ def mostrar_dashboard_cobro_admin(prestamo, admin_id, id_driver, nombre_driver):
         """, unsafe_allow_html=True)
 
         st.markdown("### Registrar Pago")
-        fecha_pago = st.date_input("📅 Fecha a la que corresponde el pago", value=datetime.today())
+        # Ajustado con la zona horaria local
+        fecha_pago = st.date_input("📅 Fecha a la que corresponde el pago", value=datetime.now(TZ_LOCAL).date())
         monto = st.number_input("💵 Monto Recibido (C$)", min_value=1.0, value=float(prestamo['monto_cuota']), step=10.0)
         nota = st.text_input("📝 Nota del cobro (Ej: Abono del día lunes)")
         
