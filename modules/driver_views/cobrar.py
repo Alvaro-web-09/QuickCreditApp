@@ -1,8 +1,13 @@
 import streamlit as st
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from db_connection import get_db_client
+
+# ==========================================
+# 👇 NUEVO 1: ZONA HORARIA LOCAL (UTC-6)
+# ==========================================
+TZ_LOCAL = timezone(timedelta(hours=-6))
 
 # ==========================================
 # 0. CONFIGURACIÓN TELEGRAM (ADMIN)
@@ -111,7 +116,6 @@ def cargar_estilos():
             box-shadow: 0 4px 10px rgba(0,0,0,0.08) !important;
         }
         
-        /* Botón Primario (Registrar / Cobrar) */
         button[kind="primary"] {
             background-color: #6ec071 !important;
             color: white !important;
@@ -122,7 +126,6 @@ def cargar_estilos():
             transform: translateY(-1px);
         }
 
-        /* Botón Secundario (Cancelar) */
         button[kind="secondary"] {
             background-color: white !important;
             color: #666 !important;
@@ -178,7 +181,6 @@ def cargar_estilos():
             border: none;
         }
         
-        /* Ajuste de contenedor de imagen */
         div[data-testid="stCameraInput"] {
             border-radius: 18px;
             overflow: hidden;
@@ -227,17 +229,28 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, cobrador_nombre):
 def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
     supabase = get_db_client()
     cliente = prestamo['clientes']
-    hoy = datetime.now().strftime("%Y-%m-%d")
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # 👇 Uso de zona horaria local para evitar saltos de día por la hora UTC del servidor
+    hoy = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d")
+    ahora = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
     
     try:
         # 1. Obtenemos datos del cobrador
-        resp_cobrador = supabase.table("usuarios").select("nombre_completo, username").eq("id", user_id).single().execute()
+        resp_cobrador = supabase.table("usuarios").select("nombre_completo, username, saldo_actual").eq("id", user_id).single().execute()
         nombre_cobrador = resp_cobrador.data.get('nombre_completo') or resp_cobrador.data.get('username') if resp_cobrador.data else "Driver"
+        
+        # 👇 NUEVO 2: CÁLCULO DE SALDO REAL
+        # Buscamos todos los pagos hechos y restamos a la deuda original para evitar desfaces
+        r_pagos = supabase.table("pagos").select("monto").eq("prestamo_id", prestamo['id']).execute()
+        total_pagado = sum([p['monto'] for p in (r_pagos.data or [])])
+        monto_total_deuda = prestamo.get('monto_total_deuda', prestamo.get('monto', 0))
+        
+        if monto_total_deuda > 0:
+            saldo_anterior_real = monto_total_deuda - total_pagado
+        else:
+            saldo_anterior_real = prestamo['saldo_pendiente']
 
-        # 2. Calcular el saldo
-        saldo_anterior = prestamo['saldo_pendiente']
-        nuevo_saldo = saldo_anterior - monto
+        nuevo_saldo = saldo_anterior_real - monto
 
         # 3. Insertar el pago
         datos_pago = {
@@ -250,21 +263,21 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         }
         supabase.table("pagos").insert(datos_pago).execute()
 
-        # ========================================================
-        # 👇 NUEVO: ACTUALIZAR EL SALDO EN LA TABLA PRESTAMOS 👇
-        # ========================================================
+        # 4. Actualizar Préstamo
         nuevo_estado = "pagado" if nuevo_saldo <= 0 else "activo"
-        
         supabase.table("prestamos").update({
             "saldo_pendiente": nuevo_saldo,
-            "estado": nuevo_estado,
-            "fecha_ultimo_pago": hoy
+            "estado": nuevo_estado
         }).eq("id", prestamo['id']).execute()
-        # ========================================================
-        # 👆 FIN DE LO NUEVO 👆
-        # ========================================================
+        
+        # 👇 NUEVO 3: SUMAR A LA CAJA DEL DRIVER
+        saldo_caja_anterior = resp_cobrador.data.get('saldo_actual', 0) if resp_cobrador.data else 0
+        nuevo_saldo_caja = saldo_caja_anterior + monto
+        supabase.table("usuarios").update({
+            "saldo_actual": nuevo_saldo_caja
+        }).eq("id", user_id).execute()
 
-        # 4. Actualizar Bitácora
+        # 5. Actualizar Bitácora
         visita_data = {"cliente_id": cliente['id'], "cobrador_id": user_id, "fecha": hoy, "estado_visita": "Pagado"}
         check = supabase.table("bitacora_visitas").select("id").eq("cliente_id", cliente['id']).eq("fecha", hoy).execute()
         if check.data:
@@ -272,7 +285,7 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         else:
             supabase.table("bitacora_visitas").insert(visita_data).execute()
 
-        # 5. Notificación Admin
+        # 6. Notificación Admin
         notificacion_admin = {
             "cobrador_id": user_id,
             "id_cliente_existente": cliente['id'],
@@ -289,31 +302,28 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
         }
         supabase.table("solicitudes").insert(notificacion_admin).execute()
 
-        # 6. Telegram Reporte
+        # 7. Telegram Reporte
         foto_bytes = foto.getvalue() if foto else None
-        final_saldo_req = supabase.table("usuarios").select("saldo_actual").eq("id", user_id).single().execute()
-        saldo_final_driver = final_saldo_req.data['saldo_actual'] if final_saldo_req.data else 0
-
         mensaje = (
             f"💰 *NUEVO PAGO (Efectivo)*\n"
             f"👤 Cliente: *{cliente['nombre']}*\n"
             f"💵 Monto: *C$ {monto:,.2f}*\n"
-            f"📉 Restante Cliente: C$ {nuevo_saldo:,.2f}\n"
+            f"📉 Restante Cliente (Real): C$ {nuevo_saldo:,.2f}\n"
             f"--------------------------\n"
             f"🏍️ Cobrado por: *{nombre_cobrador}*\n"
-            f"👜 Caja Actual Driver: C$ {saldo_final_driver:,.2f}"
+            f"👜 Caja Actual Driver: C$ {nuevo_saldo_caja:,.2f}"
         )
         enviar_reporte_telegram(mensaje, foto_bytes)
 
-        # 7. PREPARAR POPUP Y SALIR INMEDIATAMENTE PARA EVITAR DOBLE CLICK
+        # 8. PREPARAR POPUP Y SALIR
         st.session_state['datos_exito'] = {
             'cliente': cliente['nombre'],
             'monto': monto,
             'nuevo_saldo': nuevo_saldo,
             'cobrador': nombre_cobrador
         }
-        st.session_state['transaccion_activa'] = None # Salimos del cliente
-        st.rerun() # Forzamos recarga instantánea
+        st.session_state['transaccion_activa'] = None 
+        st.rerun() 
 
     except Exception as e:
         st.error(f"⚠️ Error CRÍTICO al guardar: {e}")
@@ -323,6 +333,7 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
 # ==========================================
 def mostrar_formulario_pago(prestamo, user_id):
     cliente = prestamo['clientes']
+    supabase = get_db_client()
     
     col_nav, col_title = st.columns([0.2, 0.8])
     with col_nav:
@@ -332,24 +343,29 @@ def mostrar_formulario_pago(prestamo, user_id):
     with col_title:
         st.markdown(f"<h3 style='margin:0; padding-top: 10px; font-weight: 700;'>{cliente['nombre']}</h3>", unsafe_allow_html=True)
 
-    saldo_actual = prestamo['saldo_pendiente'] 
+    # 👇 CÁLCULO DE SALDO REAL EN VISTA DEL FORMULARIO
+    r_pagos = supabase.table("pagos").select("monto").eq("prestamo_id", prestamo['id']).execute()
+    total_pagado = sum([p['monto'] for p in (r_pagos.data or [])])
+    monto_total_deuda = prestamo.get('monto_total_deuda', prestamo.get('monto', prestamo['saldo_pendiente']))
+    
+    if monto_total_deuda > 0:
+        saldo_real = monto_total_deuda - total_pagado
+    else:
+        saldo_real = prestamo['saldo_pendiente']
+
     cuota = prestamo['monto_cuota']
     
     # Manejo seguro para evitar divisiones por cero al calcular progreso
-    monto_total_prestamo = prestamo.get('monto_total', prestamo.get('monto', saldo_actual + 1))
-    if monto_total_prestamo <= 0:
-        monto_total_prestamo = 1
-        
-    monto_pagado = monto_total_prestamo - saldo_actual
-    porcentaje_avance = min(100, max(0, int((monto_pagado / monto_total_prestamo) * 100)))
+    monto_total_prestamo = monto_total_deuda if monto_total_deuda > 0 else 1
+    porcentaje_avance = min(100, max(0, int((total_pagado / monto_total_prestamo) * 100)))
     
     st.write("") 
 
     # Tarjeta de resumen
     st.markdown(f"""
         <div class="payment-summary">
-            <div class="summary-label">Saldo Pendiente Total</div>
-            <div class="big-money">C$ {saldo_actual:,.2f}</div>
+            <div class="summary-label">Saldo Pendiente Real</div>
+            <div class="big-money">C$ {saldo_real:,.2f}</div>
             <div class="cuota-pill">Cuota Sugerida: C$ {cuota:,.2f}</div>
         </div>
     """, unsafe_allow_html=True)
@@ -360,10 +376,9 @@ def mostrar_formulario_pago(prestamo, user_id):
     st.write("")
 
     # Alerta de renovación
-    if saldo_actual <= (cuota * 2) and saldo_actual > 0:
+    if saldo_real <= (cuota * 2) and saldo_real > 0:
         st.info("🎯 **¡Atención!** Este cliente está a punto de cancelar su préstamo. ¡Buen momento para ofrecer una renovación!", icon="🎉")
 
-    # === ELIMINAMOS EL st.form Y USAMOS COMPONENTES NORMALES ===
     st.markdown('<div class="method-badge">MÉTODO: EFECTIVO</div>', unsafe_allow_html=True)
     
     st.write("**Detalles del Pago**")
@@ -373,18 +388,15 @@ def mostrar_formulario_pago(prestamo, user_id):
     st.write("")
     st.write("**Comprobante**")
     
-    # --- AHORA SÍ FUNCIONARÁ AL INSTANTE ---
     activar_camara = st.toggle("📸 Activar cámara para tomar foto")
     foto = None
     
     if activar_camara:
         foto = st.camera_input("Tomar foto", label_visibility="collapsed")
-    # -----------------------------------------
     
     st.write("") 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Usamos st.button en lugar de st.form_submit_button
     if st.button("REGISTRAR PAGO", type="primary", use_container_width=True):
         procesar_pago(prestamo, monto, "Efectivo", nota, foto, user_id)
 
@@ -393,9 +405,10 @@ def mostrar_formulario_pago(prestamo, user_id):
 # ==========================================
 def mostrar_lista_clientes(user_id):
     supabase = get_db_client()
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    # 👇 Usamos zona horaria local
+    hoy = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d")
     
-    # NUEVO: Consultar saldo del driver en vivo
+    # Consultar saldo del driver en vivo
     try:
         resp_driver = supabase.table("usuarios").select("saldo_actual").eq("id", user_id).single().execute()
         saldo_driver = resp_driver.data.get('saldo_actual', 0) if resp_driver.data else 0
@@ -437,34 +450,49 @@ def mostrar_lista_clientes(user_id):
     if lista:
         st.markdown(f"<p style='color:#8D99AE; font-size:13px; font-weight:600; margin-bottom:20px;'>ENCONTRADOS: {len(lista)}</p>", unsafe_allow_html=True)
         
-    for p in lista:
-        c = p['clientes']
-        saldo = p['saldo_pendiente']
-        prestamo_id = p['id']
-        direccion = c.get('direccion', 'Sin dirección')
-        fecha_ult = p.get('fecha_ultimo_pago') or 'Sin registro'
+        # 👇 CÁLCULO MASIVO DE SALDO REAL PARA LA LISTA (Para evitar N+1 Consultas)
+        prestamo_ids = [p['id'] for p in lista]
+        pagos_dict = {pid: 0 for pid in prestamo_ids}
         
-        with st.container():
-            col_card, col_action = st.columns([0.7, 0.3])
+        if prestamo_ids:
+            res_pagos = supabase.table("pagos").select("prestamo_id, monto").in_("prestamo_id", prestamo_ids).execute()
+            if res_pagos.data:
+                for pg in res_pagos.data:
+                    pagos_dict[pg['prestamo_id']] += pg['monto']
+        
+        for p in lista:
+            c = p['clientes']
+            prestamo_id = p['id']
+            direccion = c.get('direccion', 'Sin dirección')
+            fecha_ult = p.get('fecha_ultimo_pago') or 'Sin registro'
             
-            with col_card:
-                st.markdown(f"""
-                <div class="client-list-card">
-                    <div class="client-name">{c['nombre']}</div>
-                    <div class="client-meta">📍 {direccion}</div>
-                    <div class="debt-container">
-                        <span class="debt-label">Pendiente:</span>
-                        <span class="client-debt">C$ {saldo:,.0f}</span>
+            monto_total_deuda = p.get('monto_total_deuda', p.get('monto', 0))
+            if monto_total_deuda > 0:
+                saldo_real = monto_total_deuda - pagos_dict.get(prestamo_id, 0)
+            else:
+                saldo_real = p['saldo_pendiente']
+            
+            with st.container():
+                col_card, col_action = st.columns([0.7, 0.3])
+                
+                with col_card:
+                    st.markdown(f"""
+                    <div class="client-list-card">
+                        <div class="client-name">{c['nombre']}</div>
+                        <div class="client-meta">📍 {direccion}</div>
+                        <div class="debt-container">
+                            <span class="debt-label">Pendiente:</span>
+                            <span class="client-debt">C$ {saldo_real:,.0f}</span>
+                        </div>
+                        <div class="last-payment">⏱️ Últ. pago: {fecha_ult}</div>
                     </div>
-                    <div class="last-payment">⏱️ Últ. pago: {fecha_ult}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col_action:
-                st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True) 
-                if st.button("COBRAR", key=f"cob_{prestamo_id}", type="primary", use_container_width=True):
-                    st.session_state['transaccion_activa'] = p
-                    st.rerun()
+                    """, unsafe_allow_html=True)
+                
+                with col_action:
+                    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True) 
+                    if st.button("COBRAR", key=f"cob_{prestamo_id}", type="primary", use_container_width=True):
+                        st.session_state['transaccion_activa'] = p
+                        st.rerun()
 
 # ==========================================
 # 6. MAIN
@@ -473,11 +501,10 @@ def mostrar_cobro():
     cargar_estilos()
     user_id = st.session_state.get('user_id')
     
-    # Revisamos si venimos de un pago exitoso para lanzar el popup
     if 'datos_exito' in st.session_state:
         d = st.session_state['datos_exito']
         mostrar_popup_exito(d['cliente'], d['monto'], d['nuevo_saldo'], d['cobrador'])
-        del st.session_state['datos_exito'] # Lo borramos para que no salte dos veces
+        del st.session_state['datos_exito'] 
     
     if st.session_state.get('transaccion_activa'):
         mostrar_formulario_pago(st.session_state['transaccion_activa'], user_id)
