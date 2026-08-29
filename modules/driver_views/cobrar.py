@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import uuid  # 🔑 para generar la llave de idempotencia del pago
 from datetime import datetime, timedelta, timezone
 from db_connection import get_db_client
 
@@ -226,7 +227,7 @@ def mostrar_popup_exito(cliente_nombre, monto, nuevo_saldo, cobrador_nombre):
 # ==========================================
 # 3. LÓGICA DE PROCESAMIENTO
 # ==========================================
-def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
+def procesar_pago(prestamo, monto, metodo, nota, foto, user_id, idempotency_key=None):
     supabase = get_db_client()
     cliente = prestamo['clientes']
     
@@ -235,6 +236,27 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
     ahora = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
     
     try:
+        # =======================================================
+        # 🔑 GUARDIA DE IDEMPOTENCIA
+        # Si ya existe un pago con esta misma llave, NO registramos otro.
+        # Esto blinda contra doble clic / rerun aunque el candado falle.
+        # =======================================================
+        if idempotency_key:
+            try:
+                ya_existe = supabase.table("pagos").select("id").eq("idempotency_key", idempotency_key).execute()
+                if ya_existe.data:
+                    st.warning("⚠️ Este pago ya fue registrado. Evitamos duplicarlo.")
+                    # Cerramos la transacción y limpiamos para volver a la lista
+                    st.session_state['transaccion_activa'] = None
+                    if 'pago_key' in st.session_state:
+                        del st.session_state['pago_key']
+                    time.sleep(1)
+                    st.rerun()
+                    return
+            except Exception as e:
+                # Si la columna aún no existe en la DB, no bloqueamos el flujo (solo avisamos en consola)
+                print(f"Aviso idempotencia pago (verificación): {e}")
+
         # 1. Obtenemos datos del cobrador
         resp_cobrador = supabase.table("usuarios").select("nombre_completo, username, saldo_actual").eq("id", user_id).single().execute()
         nombre_cobrador = resp_cobrador.data.get('nombre_completo') or resp_cobrador.data.get('username') if resp_cobrador.data else "Driver"
@@ -252,7 +274,7 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
 
         nuevo_saldo = saldo_anterior_real - monto
 
-        # 3. Insertar el pago
+        # 3. Insertar el pago (con la llave única)
         datos_pago = {
             "prestamo_id": prestamo['id'],
             "cliente_id": cliente['id'],
@@ -260,8 +282,20 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
             "monto": monto,
             "fecha_hora": ahora,
             "fecha_pago": hoy,
+            "idempotency_key": idempotency_key,  # 🔑 la DB rechaza un 2do pago con esta misma llave
         }
-        supabase.table("pagos").insert(datos_pago).execute()
+        # 🔑 Si la DB rechaza por llave duplicada (índice único), lo capturamos sin romper la app
+        try:
+            supabase.table("pagos").insert(datos_pago).execute()
+        except Exception as e_dup:
+            print(f"Insert pago bloqueado por idempotencia: {e_dup}")
+            st.warning("⚠️ Este pago ya fue registrado. Evitamos duplicarlo.")
+            st.session_state['transaccion_activa'] = None
+            if 'pago_key' in st.session_state:
+                del st.session_state['pago_key']
+            time.sleep(1)
+            st.rerun()
+            return
 
         # 4. Actualizar Préstamo
         nuevo_estado = "pagado" if nuevo_saldo <= 0 else "activo"
@@ -323,9 +357,16 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
             'cobrador': nombre_cobrador
         }
         st.session_state['transaccion_activa'] = None 
+        # 🔑 borramos la llave para que el próximo pago tenga una nueva
+        if 'pago_key' in st.session_state:
+            del st.session_state['pago_key']
+        # 🔒 liberamos el candado
+        st.session_state['procesando_pago'] = False
         st.rerun() 
 
     except Exception as e:
+        # 🔒 si algo falla, liberamos el candado para que pueda reintentar
+        st.session_state['procesando_pago'] = False
         st.error(f"⚠️ Error CRÍTICO al guardar: {e}")
 
 # ==========================================
@@ -334,11 +375,24 @@ def procesar_pago(prestamo, monto, metodo, nota, foto, user_id):
 def mostrar_formulario_pago(prestamo, user_id):
     cliente = prestamo['clientes']
     supabase = get_db_client()
+
+    # 🔒 candado anti doble-clic para el pago
+    if 'procesando_pago' not in st.session_state:
+        st.session_state['procesando_pago'] = False
+
+    # 🔑 llave única para ESTE pago. Se genera una sola vez por formulario abierto
+    # y se borra al terminar (o al volver) -> cada pago tiene su propia llave.
+    if 'pago_key' not in st.session_state:
+        st.session_state['pago_key'] = str(uuid.uuid4())
     
     col_nav, col_title = st.columns([0.2, 0.8])
     with col_nav:
         if st.button("⬅ Volver", key="btn_back"):
             st.session_state['transaccion_activa'] = None
+            # 🔑 al volver, descartamos la llave y el candado de este pago
+            if 'pago_key' in st.session_state:
+                del st.session_state['pago_key']
+            st.session_state['procesando_pago'] = False
             st.rerun()
     with col_title:
         st.markdown(f"<h3 style='margin:0; padding-top: 10px; font-weight: 700;'>{cliente['nombre']}</h3>", unsafe_allow_html=True)
@@ -397,8 +451,17 @@ def mostrar_formulario_pago(prestamo, user_id):
     st.write("") 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    if st.button("REGISTRAR PAGO", type="primary", use_container_width=True):
-        procesar_pago(prestamo, monto, "Efectivo", nota, foto, user_id)
+    # 🔒 botón deshabilitado mientras procesa
+    click_pago = st.button(
+        "REGISTRAR PAGO",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state['procesando_pago']
+    )
+    if click_pago and not st.session_state['procesando_pago']:
+        st.session_state['procesando_pago'] = True   # 🔒 candado ON
+        procesar_pago(prestamo, monto, "Efectivo", nota, foto, user_id,
+                      idempotency_key=st.session_state['pago_key'])   # 🔑
 
 # ==========================================
 # 5. VISTA: LISTA DE CLIENTES
@@ -492,6 +555,9 @@ def mostrar_lista_clientes(user_id):
                     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True) 
                     if st.button("COBRAR", key=f"cob_{prestamo_id}", type="primary", use_container_width=True):
                         st.session_state['transaccion_activa'] = p
+                        # 🔑 nuevo cobro => generamos una llave nueva y liberamos candado
+                        st.session_state['pago_key'] = str(uuid.uuid4())
+                        st.session_state['procesando_pago'] = False
                         st.rerun()
 
 # ==========================================

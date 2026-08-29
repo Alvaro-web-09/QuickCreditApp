@@ -1,5 +1,6 @@
 import streamlit as st
 import time 
+import uuid  # 🔑 CAUSA 3: para generar la llave de idempotencia
 import pandas as pd
 from db_connection import get_db_client
 from datetime import datetime, timedelta
@@ -164,7 +165,9 @@ def limpiar_formulario():
         "cliente_existente_selectbox",
         "tipo_cliente_radio",
         "alerta_duplicado_activa",
-        "datos_duplicados_encontrados"
+        "datos_duplicados_encontrados",
+        "procesando_solicitud",   # 🔒 aseguramos que el candado se libere al limpiar
+        "form_key"                # 🔑 CAUSA 3: la próxima solicitud tendrá una llave nueva
     ]
     
     for k in keys:
@@ -186,7 +189,6 @@ def mostrar_popup_solicitud_exito(tipo, nombre_cliente, monto, auto_aprobado):
         color = "#FFA000"
         subtitulo = "Pendiente de revisión por Administración"
 
-    # 🔧 EL CAMBIO ESTÁ AQUÍ: Todo el HTML sin sangría (pegado a la izquierda)
     html_content = f"""
 <div style="text-align: center; padding: 20px 10px;">
 <div style="color: {color}; font-size: 50px; margin-bottom: 10px;">{icono}</div>
@@ -208,7 +210,6 @@ def mostrar_popup_solicitud_exito(tipo, nombre_cliente, monto, auto_aprobado):
 </div>
 """
     
-    # Renderizamos el HTML corregido
     st.markdown(html_content, unsafe_allow_html=True)
     
     if st.button("Finalizar", type="primary", use_container_width=True):
@@ -223,7 +224,7 @@ def mostrar_popup_solicitud_exito(tipo, nombre_cliente, monto, auto_aprobado):
 # 3. LÓGICA DE GUARDADO
 # ==========================================
 
-def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, modalidad, duplicado_ignorado=False):
+def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, modalidad, duplicado_ignorado=False, idempotency_key=None):
     supabase = get_db_client()
     cobrador_id = st.session_state.get('user_id') 
     nombre_chofer = st.session_state.get('username', 'Chofer Desconocido')
@@ -246,6 +247,21 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
         else:
             cli_data = supabase.table("clientes").select("nombre").eq("id", id_existente).execute()
             nombre_real_cliente = cli_data.data[0]['nombre'] if cli_data.data else f"ID: {id_existente}"
+
+        # =======================================================
+        # 🔑 CAUSA 3: guardia de idempotencia (auto-aprobados)
+        # Si ya existe un préstamo con esta misma llave, NO creamos otro.
+        # Esto blinda contra doble insert aunque el candado falle o haya un rerun raro.
+        # =======================================================
+        if idempotency_key:
+            try:
+                ya_existe = supabase.table("prestamos").select("id").eq("idempotency_key", idempotency_key).execute()
+                if ya_existe.data:
+                    st.warning("⚠️ Esta solicitud ya fue registrada. Evitamos crear un préstamo duplicado.")
+                    return False
+            except Exception as e:
+                # Si la columna aún no existe en la DB, no bloqueamos el flujo (solo avisamos en consola)
+                print(f"Aviso idempotencia (verificación): {e}")
 
         # =======================================================
         # 🟢 RUTA VERDE (AUTO-APROBACIÓN DIRECTA)
@@ -300,10 +316,17 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                 "fecha_vencimiento": fecha_vencimiento.date().isoformat(),
                 "modalidad": modalidad,
                 "monto_cuota": cuota,
-                "codigo_prestamo": codigo_generado
+                "codigo_prestamo": codigo_generado,
+                "idempotency_key": idempotency_key  # 🔑 CAUSA 3: la DB rechaza un 2do insert con esta misma llave
             }
             
-            res_prest = supabase.table("prestamos").insert(datos_prestamo).execute()
+            # 🔑 CAUSA 3: si la DB rechaza por llave duplicada (índice único), lo capturamos sin romper la app
+            try:
+                res_prest = supabase.table("prestamos").insert(datos_prestamo).execute()
+            except Exception as e_dup:
+                print(f"Insert préstamo bloqueado por idempotencia (auto): {e_dup}")
+                st.warning("⚠️ Esta solicitud ya fue registrada. Evitamos crear un préstamo duplicado.")
+                return False
             
             if res_prest.data:
                 nuevo_saldo = saldo_chofer - monto
@@ -319,6 +342,9 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                     "tasa_propuesta": tasa,
                     "plazo_dias": dias,
                     "modalidad": modalidad,
+                    # ✅ Se mantiene "pendiente": tu panel de admin filtra los auto-aprobados
+                    # por 'tipo_solicitud' (notificacion_auto / notificacion_auto_nuevo),
+                    # NO por estado. Así siguen apareciendo en la bandeja para archivar.
                     "estado": "pendiente",
                     "fecha_solicitud": datetime.now().isoformat()
                 }
@@ -349,6 +375,16 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
         # 🟠 RUTA NORMAL (VA A SOLICITUDES PARA EL ADMIN)
         # =======================================================
         else:
+            # 🔑 CAUSA 3: guardia de idempotencia para solicitudes (ruta normal)
+            if idempotency_key:
+                try:
+                    ya_sol = supabase.table("solicitudes").select("id").eq("idempotency_key", idempotency_key).execute()
+                    if ya_sol.data:
+                        st.warning("⚠️ Esta solicitud ya fue enviada. Evitamos duplicarla.")
+                        return False
+                except Exception as e:
+                    print(f"Aviso idempotencia solicitudes (verificación): {e}")
+
             datos_insertar = {
                 "cobrador_id": cobrador_id,
                 "tipo_solicitud": tipo,
@@ -359,10 +395,16 @@ def guardar_solicitud_sql(tipo, id_existente, json_nuevo, monto, tasa, dias, mod
                 "estado": "pendiente",
                 "fecha_solicitud": datetime.now().isoformat(),
                 "plazo_dias": dias,
-                "modalidad": modalidad
+                "modalidad": modalidad,
+                "idempotency_key": idempotency_key  # 🔑 CAUSA 3
             }
             
-            response = supabase.table("solicitudes").insert(datos_insertar).execute()
+            try:
+                response = supabase.table("solicitudes").insert(datos_insertar).execute()
+            except Exception as e_dup:
+                print(f"Insert solicitud bloqueado por idempotencia: {e_dup}")
+                st.warning("⚠️ Esta solicitud ya fue enviada. Evitamos duplicarla.")
+                return False
             
             if response.data:
                 try:
@@ -410,6 +452,15 @@ def mostrar_ventas():
     if 'alerta_duplicado_activa' not in st.session_state:
         st.session_state['alerta_duplicado_activa'] = False
         st.session_state['datos_duplicados_encontrados'] = []
+
+    # 🔒 CAUSA 1: candado anti doble-clic / doble-submit
+    if 'procesando_solicitud' not in st.session_state:
+        st.session_state['procesando_solicitud'] = False
+
+    # 🔑 CAUSA 3: llave única para ESTA solicitud. Se genera una sola vez por formulario
+    # y se limpia en limpiar_formulario() -> cada préstamo nuevo tendrá su propia llave.
+    if 'form_key' not in st.session_state:
+        st.session_state['form_key'] = str(uuid.uuid4())
 
     datos_recuperados = st.session_state.get('datos_a_corregir') or {}
     modo_correccion = True if datos_recuperados else False
@@ -582,60 +633,92 @@ def mostrar_ventas():
             if col_d1.button("🔙 Cancelar y Corregir", use_container_width=True):
                 st.session_state['alerta_duplicado_activa'] = False
                 st.rerun()
-                
-            if col_d2.button("⚠️ SÍ, CREAR DE TODAS FORMAS", type="primary", use_container_width=True):
-                exito_datos = guardar_solicitud_sql(
-                    tipo_sql, id_cliente_existente, datos_json_nuevo, 
-                    monto, tasa, dias, modalidad, duplicado_ignorado=True
-                )
-                if exito_datos:
-                    st.session_state['alerta_duplicado_activa'] = False
-                    if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
-                    st.session_state['solicitud_exito'] = exito_datos
-                    st.rerun()
+            
+            # 🔒 CAUSA 1: botón deshabilitado mientras procesa
+            crear_igual = col_d2.button(
+                "⚠️ SÍ, CREAR DE TODAS FORMAS",
+                type="primary",
+                use_container_width=True,
+                disabled=st.session_state['procesando_solicitud']
+            )
+            if crear_igual and not st.session_state['procesando_solicitud']:
+                st.session_state['procesando_solicitud'] = True   # 🔒 candado ON
+                try:
+                    exito_datos = guardar_solicitud_sql(
+                        tipo_sql, id_cliente_existente, datos_json_nuevo, 
+                        monto, tasa, dias, modalidad, duplicado_ignorado=True,
+                        idempotency_key=st.session_state['form_key']   # 🔑 CAUSA 3
+                    )
+                    if exito_datos:
+                        st.session_state['alerta_duplicado_activa'] = False
+                        if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
+                        st.session_state['solicitud_exito'] = exito_datos
+                        st.session_state['procesando_solicitud'] = False  # 🔓 liberamos antes del rerun
+                        st.rerun()
+                finally:
+                    # 🔓 si NO hubo rerun (por ej. falló el guardado), liberamos el candado
+                    st.session_state['procesando_solicitud'] = False
 
     else:
         boton_texto = "🚀 Registrar Solicitud"
         if modo_correccion: boton_texto = "♻️ Actualizar Solicitud"
 
-        if st.button(boton_texto, type="primary", use_container_width=True):
-            error_msg = []
-            
-            if tipo_sql == "nuevo":
-                if not datos_json_nuevo['nombre']: error_msg.append("El Nombre es obligatorio.")
-                if not datos_json_nuevo['cedula']: error_msg.append("La Cédula es obligatoria.")
-                if not datos_json_nuevo['telefono']: error_msg.append("El Teléfono es obligatorio.")
-                if not datos_json_nuevo['direccion']: error_msg.append("La Dirección es obligatoria.")
-                if not datos_json_nuevo['contacto_emergencia']: error_msg.append("El Nombre de Emergencia es obligatorio.")
-                if not datos_json_nuevo['telefono_emergencia']: error_msg.append("El Teléfono de Emergencia es obligatorio.")
+        # 🔒 CAUSA 1: botón principal deshabilitado mientras procesa
+        click = st.button(
+            boton_texto,
+            type="primary",
+            use_container_width=True,
+            disabled=st.session_state['procesando_solicitud']
+        )
 
-                if error_msg:
-                    for e in error_msg: st.error(f"⚠️ {e}")
-                    return 
+        if click and not st.session_state['procesando_solicitud']:
+            st.session_state['procesando_solicitud'] = True   # 🔒 candado ON
+            try:
+                error_msg = []
+                
+                if tipo_sql == "nuevo":
+                    if not datos_json_nuevo['nombre']: error_msg.append("El Nombre es obligatorio.")
+                    if not datos_json_nuevo['cedula']: error_msg.append("La Cédula es obligatoria.")
+                    if not datos_json_nuevo['telefono']: error_msg.append("El Teléfono es obligatorio.")
+                    if not datos_json_nuevo['direccion']: error_msg.append("La Dirección es obligatoria.")
+                    if not datos_json_nuevo['contacto_emergencia']: error_msg.append("El Nombre de Emergencia es obligatorio.")
+                    if not datos_json_nuevo['telefono_emergencia']: error_msg.append("El Teléfono de Emergencia es obligatorio.")
 
-                coincidencias = buscar_coincidencias(
-                    datos_json_nuevo['nombre'], 
-                    datos_json_nuevo['cedula'], 
-                    datos_json_nuevo['telefono']
+                    if error_msg:
+                        for e in error_msg: st.error(f"⚠️ {e}")
+                        st.session_state['procesando_solicitud'] = False  # 🔓 liberamos, hubo error de validación
+                        return 
+
+                    coincidencias = buscar_coincidencias(
+                        datos_json_nuevo['nombre'], 
+                        datos_json_nuevo['cedula'], 
+                        datos_json_nuevo['telefono']
+                    )
+                    
+                    if coincidencias:
+                        st.session_state['alerta_duplicado_activa'] = True
+                        st.session_state['datos_duplicados_encontrados'] = coincidencias
+                        st.session_state['procesando_solicitud'] = False  # 🔓 liberamos, vamos a mostrar alerta
+                        st.rerun()
+                        return
+
+                elif tipo_sql == "existente":
+                    if not id_cliente_existente:
+                        st.error("⚠️ Debes seleccionar un cliente de la lista.")
+                        st.session_state['procesando_solicitud'] = False  # 🔓 liberamos, hubo error
+                        return
+
+                exito_datos = guardar_solicitud_sql(
+                    tipo_sql, id_cliente_existente, datos_json_nuevo, 
+                    monto, tasa, dias, modalidad,
+                    idempotency_key=st.session_state['form_key']   # 🔑 CAUSA 3
                 )
                 
-                if coincidencias:
-                    st.session_state['alerta_duplicado_activa'] = True
-                    st.session_state['datos_duplicados_encontrados'] = coincidencias
+                if exito_datos:
+                    if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
+                    st.session_state['solicitud_exito'] = exito_datos
+                    st.session_state['procesando_solicitud'] = False  # 🔓 liberamos antes del rerun
                     st.rerun()
-                    return
-
-            elif tipo_sql == "existente":
-                if not id_cliente_existente:
-                    st.error("⚠️ Debes seleccionar un cliente de la lista.")
-                    return
-
-            exito_datos = guardar_solicitud_sql(
-                tipo_sql, id_cliente_existente, datos_json_nuevo, 
-                monto, tasa, dias, modalidad
-            )
-            
-            if exito_datos:
-                if 'datos_a_corregir' in st.session_state: del st.session_state['datos_a_corregir']
-                st.session_state['solicitud_exito'] = exito_datos
-                st.rerun()
+            finally:
+                # 🔓 red de seguridad: si por cualquier motivo no hubo rerun, liberamos el candado
+                st.session_state['procesando_solicitud'] = False
